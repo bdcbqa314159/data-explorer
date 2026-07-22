@@ -4,9 +4,8 @@
   "configurePresets": [
     {
       "name": "default",
-      "displayName": "vcpkg (build deps from source)",
+      "displayName": "FetchContent (build deps from source)",
       "binaryDir": "${sourceDir}/build",
-      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }

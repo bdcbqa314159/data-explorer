@@ -48,51 +48,43 @@ offline, and a network blip still shows the last-known stories.
 
 ---
 
-## Dependencies (built from source)
+## Dependencies (downloaded from GitHub, built from source)
 
-Two libraries, both compiled from source per-platform by **vcpkg** in *manifest
-mode* (declared in `vcpkg.json`):
+Two libraries, pulled straight from GitHub and compiled from source by CMake's
+**FetchContent** during the first configure — no package manager involved. They
+are pinned to a tag in `CMakeLists.txt`:
 
-- **libcurl** — HTTP + TLS. vcpkg selects a working TLS backend for each OS
-  (Schannel on Windows, a suitable one on macOS/Linux), so HTTPS feeds work out
-  of the box.
+- **libcurl** — HTTP + TLS. The TLS backend is the OS-native one, chosen per
+  platform so we don't also build OpenSSL from source:
+  **Windows → Schannel, macOS → Secure Transport, Linux → system OpenSSL.**
+  Built slim: HTTP(S) only, static, no exe/tests/docs.
 - **pugixml** — small, fast XML parser for RSS/Atom.
 
-You do **not** run any `apt install` / `brew install` for these — vcpkg fetches
-and builds them. The only host prerequisites are a C++20 compiler, CMake ≥ 3.21,
-and git.
+The only host prerequisites are a C++20 compiler, CMake ≥ 3.21, and git.
+On **Linux** you also need OpenSSL dev headers for the TLS backend
+(`apt install libssl-dev` / `dnf install openssl-devel`); Windows and macOS use
+the system TLS and need nothing extra.
+
+> Prefer to vendor the sources instead of fetching? Point each
+> `FetchContent_Declare` at a local path (`SOURCE_DIR`) or a downloaded release
+> tarball (`URL`) — the rest of the build is unchanged.
 
 ---
 
 ## Build & run
 
-### 1. Get vcpkg (once, from source)
-
-```sh
-git clone https://github.com/microsoft/vcpkg
-./vcpkg/bootstrap-vcpkg.sh        # Windows: .\vcpkg\bootstrap-vcpkg.bat
-```
-
-Point an environment variable at it so the CMake preset can find the toolchain:
-
-```sh
-export VCPKG_ROOT=/absolute/path/to/vcpkg      # bash/zsh
-# Windows PowerShell:  $env:VCPKG_ROOT = "C:\path\to\vcpkg"
-```
-
-(Persist it in your shell profile so you don't repeat this.)
-
-### 2. Configure, build, test
-
 From the `feedwire/` directory:
 
 ```sh
-cmake --preset default        # first run builds libcurl + pugixml from source (slow, one-time)
+cmake --preset default        # first run git-clones + builds curl + pugixml (slow, one-time)
 cmake --build build
-ctest --preset default        # runs the parser tests
+ctest --preset default        # runs the tests
 ```
 
-### 3. Run
+The cloned dependency sources live under `build/_deps/` (git-ignored), so a clean
+rebuild is just `rm -rf build`.
+
+### Run
 
 ```sh
 ./build/feedwire                 # all stories, newest first
@@ -135,7 +127,7 @@ git-ignored.
 
 | Platform | Compiler | Also need |
 |----------|----------|-----------|
-| Linux    | GCC ≥ 11 or Clang ≥ 14 | `cmake`, `git`, `pkg-config`, `curl`, `zip`, `unzip`, `tar` (for vcpkg) |
+| Linux    | GCC ≥ 11 or Clang ≥ 14 | `cmake`, `git`, OpenSSL dev headers (`libssl-dev`) |
 | macOS    | Apple Clang (Xcode CLT) | `cmake`, `git` (`xcode-select --install`) |
 | Windows  | MSVC (VS 2022 Build Tools) | `cmake`, `git` |
 
@@ -161,10 +153,12 @@ Name|https://example.com/rss.xml
 
 ## Troubleshooting
 
-- **`Could not find toolchain file`** — `VCPKG_ROOT` is unset or wrong. Echo it and
-  re-run `cmake --preset default`.
-- **First configure is very slow** — expected: vcpkg is compiling libcurl and its
-  TLS backend from source. Subsequent configures reuse the cache.
+- **First configure is slow** — expected: FetchContent is cloning and compiling
+  libcurl from source. It's cached under `build/_deps/`; later builds are fast.
+- **Linux: TLS/OpenSSL not found at configure** — install the dev headers
+  (`apt install libssl-dev`), then re-run `cmake --preset default`.
+- **macOS: Secure Transport deprecation warnings** — harmless. If a future curl
+  drops it, `brew install openssl` and set `-DCURL_USE_SECTRANSP=OFF -DCURL_USE_OPENSSL=ON`.
 - **A feed prints `[warn] ...: GET failed`** — that feed timed out or blocked the
   request; the rest still render. Try the URL in a browser to confirm it's live.
 - **Empty output but no warnings** — the feeds returned non-RSS/Atom XML (e.g. an

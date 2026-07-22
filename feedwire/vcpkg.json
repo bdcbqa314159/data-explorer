@@ -1,9 +1,0 @@
-{
-  "name": "feedwire",
-  "version": "0.1.0",
-  "description": "Personal terminal news aggregator — one curated stream from many feeds.",
-  "dependencies": [
-    "curl",
-    "pugixml"
-  ]
-}

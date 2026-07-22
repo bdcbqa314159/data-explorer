@@ -5,9 +5,43 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Dependencies come from vcpkg (built from source). See README.md.
-find_package(CURL CONFIG REQUIRED)
-find_package(pugixml CONFIG REQUIRED)
+# Dependencies are downloaded from GitHub and built from source via FetchContent.
+# No package manager needed. See README.md.
+include(FetchContent)
+
+# --- pugixml: tiny XML parser, trivial to build --------------------------
+FetchContent_Declare(pugixml
+  GIT_REPOSITORY https://github.com/zeux/pugixml.git
+  GIT_TAG        v1.14
+  GIT_SHALLOW    TRUE
+)
+
+# --- libcurl: HTTP + TLS -------------------------------------------------
+# Use the OS-native TLS backend so we don't also compile OpenSSL from source:
+#   Windows -> Schannel, macOS -> Secure Transport, Linux -> system OpenSSL.
+# Slimmed to HTTP(S) only, static, no exe/tests/zlib.
+set(BUILD_TESTING OFF)                            # skip curl's own test suite
+set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+set(CURL_ZLIB OFF CACHE BOOL "" FORCE)
+set(CURL_ENABLE_SSL ON CACHE BOOL "" FORCE)
+set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)   # skip man-page generation
+set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
+if(WIN32)
+  set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
+elseif(APPLE)
+  set(CURL_USE_SECTRANSP ON CACHE BOOL "" FORCE)
+else()
+  set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)    # needs system OpenSSL dev headers
+endif()
+FetchContent_Declare(curl
+  GIT_REPOSITORY https://github.com/curl/curl.git
+  GIT_TAG        curl-8_11_0
+  GIT_SHALLOW    TRUE
+)
+
+FetchContent_MakeAvailable(pugixml curl)
 
 # --- main binary ---------------------------------------------------------
 add_executable(feedwire
