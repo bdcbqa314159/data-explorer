@@ -8,15 +8,19 @@
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <string>
+#include <thread>
 
 namespace feedwire {
 
 using namespace ftxui;
 
 namespace {
+
+constexpr size_t kTitleWidth = 30;  // marquee window for the selected row
 
 std::string relTime(std::chrono::system_clock::time_point tp) {
   using namespace std::chrono;
@@ -37,26 +41,42 @@ std::string padRight(std::string s, size_t w) {
   return s;
 }
 
+// Horizontal ticker: window of `width` chars into `s`, scrolled by `offset`.
+// Short strings return as-is. ponytail: byte-indexed, so we only scroll pure
+// ASCII — multibyte titles clip statically to avoid splitting a codepoint.
+std::string marquee(const std::string& s, size_t width, size_t offset) {
+  if (s.size() <= width) return s;
+  for (unsigned char c : s)
+    if (c >= 0x80) return s.substr(0, width);
+  const std::string padded = s + "    ";  // gap before it loops
+  const size_t start = offset % padded.size();
+  std::string out;
+  out.reserve(width);
+  for (size_t i = 0; i < width; ++i) out += padded[(start + i) % padded.size()];
+  return out;
+}
+
 Color sentimentColor(const std::string& s) {
   if (s == "positive") return Color::Green;
   if (s == "negative") return Color::Red;
   return Color::GrayLight;
 }
 
-// One list row: [dot] [ 12m] [CNBC      ] Headline… — aligned columns.
-Element rowElement(const NewsItem& it, bool unread, bool focused) {
+// One list row: [dot] [ 12m] [CNBC      ] title-start… — aligned columns.
+// The selected row marquees its title; others show the start, clipped.
+Element rowElement(const NewsItem& it, bool unread, bool focused, size_t offset) {
   Element dot = text(unread ? "● " : "  ");
   Element time = text(padLeft(relTime(it.published), 4) + " ");
   Element src = text(padRight(it.source, 10) + " ");
-  Element title = text(it.title);
 
   if (focused) {
+    Element title = text(marquee(it.title, kTitleWidth, offset));
     return hbox({dot, time, src, title | flex}) | inverted;
   }
   dot = dot | color(unread ? Color::Yellow : Color::GrayDark);
   time = time | dim;
   src = src | color(Color::Cyan);
-  title = unread ? (title | bold) : (title | dim);
+  Element title = unread ? (text(it.title) | bold) : (text(it.title) | dim);
   return hbox({dot, time, src, title | flex});
 }
 
@@ -103,20 +123,27 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
   auto screen = ScreenInteractive::Fullscreen();
   int selected = 0;
   const int count = static_cast<int>(stories.size());
+  size_t marqueeOffset = 0;
 
-  // One MenuEntry per story; each row styles itself from its NewsItem + focus.
+  // One MenuEntry per story; each row styles itself from its item + focus + tick.
   auto list = Container::Vertical({}, &selected);
   for (int i = 0; i < count; ++i) {
     MenuEntryOption opt;
-    opt.transform = [&stories, &readStore, i](const EntryState& s) {
+    opt.transform = [&stories, &readStore, &marqueeOffset, i](const EntryState& s) {
       const NewsItem& it = stories[i];
-      return rowElement(it, !readStore.isRead(it.url), s.focused);
+      return rowElement(it, !readStore.isRead(it.url), s.focused, marqueeOffset);
     };
     list->Add(MenuEntry("", opt));
   }
 
+  const auto startTime = std::chrono::steady_clock::now();
   int lastSelected = -1;  // -1 so the initially-selected row is marked read
+
   auto renderer = Renderer(list, [&] {
+    using namespace std::chrono;
+    const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - startTime).count();
+    marqueeOffset = static_cast<size_t>(elapsed / 180);  // ~5.5 chars/sec
+
     if (selected != lastSelected) {
       lastSelected = selected;
       readStore.markRead(stories[selected].url);  // browsing = reading
@@ -150,18 +177,29 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
       openInBrowser(stories[selected].url);
       return true;
     }
-    if (e == Event::Character('j')) {  // vim down
+    if (e == Event::Character('j')) {
       if (selected < count - 1) ++selected;
       return true;
     }
-    if (e == Event::Character('k')) {  // vim up
+    if (e == Event::Character('k')) {
       if (selected > 0) --selected;
       return true;
     }
     return false;
   });
 
+  // Nudge a redraw a few times a second so the selected row's title animates.
+  std::atomic<bool> running{true};
+  std::thread ticker([&] {
+    while (running.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(120));
+      screen.PostEvent(Event::Custom);
+    }
+  });
+
   screen.Loop(renderer);
+  running.store(false);
+  ticker.join();
   readStore.save();
 }
 
