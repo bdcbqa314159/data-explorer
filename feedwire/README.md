@@ -32,7 +32,8 @@ batch. That's the whole program.
 | `src/feed.{hpp,cpp}` | `parseFeed`, `stripHtml`, `inferSentiment` — pure, no I/O |
 | `src/cache.{hpp,cpp}` | `FeedCache` — disk TTL cache of raw feed bodies, with stale fallback |
 | `src/read_store.{hpp,cpp}` | `ReadStore` — persistent set of read item urls |
-| `src/main.cpp` | args → cache-aware concurrent fetch → merge/dedup/sort → filter → print |
+| `src/tui.{hpp,cpp}` | `runTui` — interactive two-pane reader (FTXUI) |
+| `src/main.cpp` | args → cache-aware concurrent fetch → merge/dedup/sort → filter → print or TUI |
 | `tests/feed_test.cpp` | parsing-layer tests (run via CTest) |
 | `tests/store_test.cpp` | cache + read-store tests, using a temp dir |
 
@@ -59,6 +60,7 @@ are pinned to a tag in `CMakeLists.txt`:
   **Windows → Schannel, macOS → Secure Transport, Linux → system OpenSSL.**
   Built slim: HTTP(S) only, static, no exe/tests/docs.
 - **pugixml** — small, fast XML parser for RSS/Atom.
+- **FTXUI** — terminal UI library for the interactive `--tui` reader.
 
 The only host prerequisites are a C++20 compiler, CMake ≥ 3.21, and git.
 On **Linux** you also need OpenSSL dev headers for the TLS backend
@@ -109,9 +111,24 @@ generator).
 | `--no-cache` | always refetch, ignore fresh cache |
 | `--unread` | only stories not yet marked read |
 | `--mark-read` | mark the shown stories read, then exit |
+| `--tui` | interactive two-pane reader |
 
 A typical loop: `feedwire --unread` to see what's new, then `feedwire --mark-read`
 to catch up.
+
+### Interactive reader (`--tui`)
+
+`feedwire --tui` opens a two-pane view: headline list on the left, detail on the
+right. Filters still apply, so `feedwire --tui --source CNBC` scopes the reader.
+
+| Key | Action |
+|-----|--------|
+| `↑`/`↓` or `j`/`k` | move selection |
+| `o` | open the selected story in your browser |
+| `q` / `Esc` | quit |
+
+Browsing a story marks it read (its `*` clears); read state is saved on quit.
+Needs a real terminal — piping/redirecting won't work.
 
 ### State on disk (`.cache/`)
 
@@ -172,7 +189,7 @@ Name|https://example.com/rss.xml
 |-------|------|----------------|--------|
 | 0 — Spine | fetch → parse → dedup → sort → print | RAII over C API, `std::async`, move semantics | ✅ done |
 | 1 — State | disk TTL cache, `--search`/`--source`, read/unread | `std::filesystem`, caching, `std::optional`, `std::atomic` | ✅ done |
-| 2 — TUI | two-pane list ↔ read-through, keyboard nav | FTXUI, event loop, render/state separation | next |
-| 3 — Read-through | fetch + extract article body | a real HTML parser (gumbo/lexbor) | later |
+| 2 — TUI | `--tui` two-pane reader, keyboard nav | FTXUI, event loop, render/state separation | ✅ done |
+| 3 — Read-through | fetch + extract article body into the detail pane | a real HTML parser (gumbo/lexbor) | next |
 
 Each phase is an optional upgrade on the one before.

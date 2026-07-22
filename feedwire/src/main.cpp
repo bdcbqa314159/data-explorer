@@ -2,6 +2,7 @@
 #include "feed.hpp"
 #include "http_client.hpp"
 #include "read_store.hpp"
+#include "tui.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -28,6 +29,7 @@ struct Options {
   bool unread = false;
   bool markRead = false;
   bool useCache = true;
+  bool tui = false;
   bool help = false;
 };
 
@@ -47,6 +49,7 @@ void printUsage() {
       "  --no-cache       always refetch, ignore fresh cache\n"
       "  --unread         only stories not yet marked read\n"
       "  --mark-read      mark the shown stories read, then exit\n"
+      "  --tui            interactive two-pane reader (arrows/j-k, o open, q quit)\n"
       "  -h, --help       this help\n\n"
       "Unread stories are prefixed with '*'.\n";
 }
@@ -76,6 +79,7 @@ Options parseArgs(int argc, char** argv, bool& ok) {
     else if (a == "--no-cache") o.useCache = false;
     else if (a == "--unread") o.unread = true;
     else if (a == "--mark-read") o.markRead = true;
+    else if (a == "--tui") o.tui = true;
     else if (a == "-h" || a == "--help") o.help = true;
     else if (!a.empty() && a[0] != '-') o.configPath = a;  // positional config
     else { std::cerr << "Unknown option: " << a << "\n"; ok = false; }
@@ -201,6 +205,11 @@ int main(int argc, char** argv) {
     if (!opt.search.empty() && !containsCI(item.title + " " + item.summary, opt.search)) continue;
     if (opt.unread && readStore.isRead(item.url)) continue;
     shown.push_back(std::move(item));
+  }
+
+  if (opt.tui) {
+    runTui(shown, readStore);  // browsing marks read and saves on exit
+    return 0;
   }
 
   int unreadCount = 0;

@@ -41,7 +41,17 @@ FetchContent_Declare(curl
   GIT_SHALLOW    TRUE
 )
 
-FetchContent_MakeAvailable(pugixml curl)
+# --- FTXUI: terminal UI (Phase 2) ----------------------------------------
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(ftxui
+  GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+  GIT_TAG        v5.0.0
+  GIT_SHALLOW    TRUE
+)
+
+FetchContent_MakeAvailable(pugixml curl ftxui)
 
 # --- main binary ---------------------------------------------------------
 add_executable(feedwire
@@ -50,9 +60,14 @@ add_executable(feedwire
   src/feed.cpp
   src/cache.cpp
   src/read_store.cpp
+  src/tui.cpp
 )
 target_include_directories(feedwire PRIVATE src)
-target_link_libraries(feedwire PRIVATE CURL::libcurl pugixml::pugixml)
+target_link_libraries(feedwire PRIVATE
+  CURL::libcurl
+  pugixml::pugixml
+  ftxui::component ftxui::dom ftxui::screen
+)
 
 # --- tests ---------------------------------------------------------------
 # No framework — plain asserts, run via CTest. Cross-platform, zero extra deps.
