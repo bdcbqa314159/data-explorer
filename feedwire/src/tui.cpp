@@ -20,18 +20,63 @@ namespace {
 
 std::string relTime(std::chrono::system_clock::time_point tp) {
   using namespace std::chrono;
-  if (tp == system_clock::time_point{}) return "  ?";
+  if (tp == system_clock::time_point{}) return "?";
   auto mins = duration_cast<minutes>(system_clock::now() - tp).count();
   if (mins < 0) mins = 0;
   if (mins < 60) return std::to_string(mins) + "m";
   return std::to_string(mins / 60) + "h";
 }
 
-// One list row: "* 12m  CNBC  Headline" (no star once read).
-std::string label(const NewsItem& item, bool unread) {
-  std::string time = relTime(item.published);
-  std::string src = item.source.substr(0, 10);
-  return std::string(unread ? "* " : "  ") + time + "  " + src + "  " + item.title;
+std::string padLeft(std::string s, size_t w) {
+  if (s.size() < w) s.insert(0, w - s.size(), ' ');
+  return s;
+}
+std::string padRight(std::string s, size_t w) {
+  if (s.size() > w) s.resize(w);
+  else s.append(w - s.size(), ' ');
+  return s;
+}
+
+Color sentimentColor(const std::string& s) {
+  if (s == "positive") return Color::Green;
+  if (s == "negative") return Color::Red;
+  return Color::GrayLight;
+}
+
+// One list row: [dot] [ 12m] [CNBC      ] Headline… — aligned columns.
+Element rowElement(const NewsItem& it, bool unread, bool focused) {
+  Element dot = text(unread ? "● " : "  ");
+  Element time = text(padLeft(relTime(it.published), 4) + " ");
+  Element src = text(padRight(it.source, 10) + " ");
+  Element title = text(it.title);
+
+  if (focused) {
+    return hbox({dot, time, src, title | flex}) | inverted;
+  }
+  dot = dot | color(unread ? Color::Yellow : Color::GrayDark);
+  time = time | dim;
+  src = src | color(Color::Cyan);
+  title = unread ? (title | bold) : (title | dim);
+  return hbox({dot, time, src, title | flex});
+}
+
+Element detailElement(const NewsItem& it) {
+  return vbox({
+      text(it.title) | bold,
+      separator(),
+      hbox({
+          text(it.source) | color(Color::Yellow),
+          text("   "),
+          text(relTime(it.published) + " ago") | dim,
+          text("   "),
+          text(it.sentiment) | color(sentimentColor(it.sentiment)),
+      }),
+      separator(),
+      paragraph(it.summary.empty() ? "(no summary)" : it.summary) | flex,
+      separator(),
+      text(it.url) | dim,
+      text("↑/↓ or j/k  ·  o open in browser  ·  q quit") | dim,
+  });
 }
 
 // Open a url in the OS browser. Best-effort; refuses anything that isn't a plain
@@ -57,47 +102,43 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
 
   auto screen = ScreenInteractive::Fullscreen();
   int selected = 0;
+  const int count = static_cast<int>(stories.size());
 
-  std::vector<std::string> entries;
-  entries.reserve(stories.size());
-  for (const auto& s : stories) entries.push_back(label(s, !readStore.isRead(s.url)));
+  // One MenuEntry per story; each row styles itself from its NewsItem + focus.
+  auto list = Container::Vertical({}, &selected);
+  for (int i = 0; i < count; ++i) {
+    MenuEntryOption opt;
+    opt.transform = [&stories, &readStore, i](const EntryState& s) {
+      const NewsItem& it = stories[i];
+      return rowElement(it, !readStore.isRead(it.url), s.focused);
+    };
+    list->Add(MenuEntry("", opt));
+  }
 
-  auto markCurrent = [&] {
-    NewsItem& s = stories[selected];
-    if (!readStore.isRead(s.url)) {
-      readStore.markRead(s.url);
-      entries[selected] = label(s, /*unread=*/false);
+  int lastSelected = -1;  // -1 so the initially-selected row is marked read
+  auto renderer = Renderer(list, [&] {
+    if (selected != lastSelected) {
+      lastSelected = selected;
+      readStore.markRead(stories[selected].url);  // browsing = reading
     }
-  };
+    int unread = 0;
+    for (const auto& s : stories) unread += readStore.isRead(s.url) ? 0 : 1;
 
-  MenuOption menuOption;
-  menuOption.on_change = [&] { markCurrent(); };
-  auto menu = Menu(&entries, &selected, menuOption);
-
-  auto renderer = Renderer(menu, [&] {
-    const NewsItem& s = stories[selected];
-    Element detail = vbox({
-        text(s.title) | bold,
-        separator(),
-        hbox({
-            text(s.source) | color(Color::Yellow),
-            text("   "),
-            text(relTime(s.published)) | dim,
-            text("   "),
-            text(s.sentiment) | dim,
-        }),
-        separator(),
-        paragraph(s.summary.empty() ? "(no summary)" : s.summary) | flex,
-        separator(),
-        text("↑/↓ or j/k  ·  o open in browser  ·  q quit") | dim,
+    Element header = hbox({
+        text(" feedwire ") | bold | inverted,
+        text("  " + std::to_string(count) + " stories") | dim,
+        text("  ·  " + std::to_string(unread) + " unread") | dim,
     });
 
-    return hbox({
-               menu->Render() | vscroll_indicator | frame | size(WIDTH, EQUAL, 48),
-               separator(),
-               detail | flex,
-           }) |
-           border;
+    return vbox({
+        header,
+        separator(),
+        hbox({
+            list->Render() | vscroll_indicator | frame | size(WIDTH, EQUAL, 52),
+            separator(),
+            detailElement(stories[selected]) | flex,
+        }) | flex,
+    }) | border;
   });
 
   renderer |= CatchEvent([&](Event e) {
@@ -109,10 +150,17 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
       openInBrowser(stories[selected].url);
       return true;
     }
+    if (e == Event::Character('j')) {  // vim down
+      if (selected < count - 1) ++selected;
+      return true;
+    }
+    if (e == Event::Character('k')) {  // vim up
+      if (selected > 0) --selected;
+      return true;
+    }
     return false;
   });
 
-  markCurrent();  // the first, pre-selected item counts as read
   screen.Loop(renderer);
   readStore.save();
 }
