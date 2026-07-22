@@ -32,7 +32,8 @@ batch. That's the whole program.
 | `src/feed.{hpp,cpp}` | `parseFeed`, `stripHtml`, `inferSentiment` — pure, no I/O |
 | `src/cache.{hpp,cpp}` | `FeedCache` — disk TTL cache of raw feed bodies, with stale fallback |
 | `src/read_store.{hpp,cpp}` | `ReadStore` — persistent set of read item urls |
-| `src/tui.{hpp,cpp}` | `runTui` — interactive two-pane reader (FTXUI) |
+| `src/article.{hpp,cpp}` | `extractArticle` — pull readable prose from raw HTML |
+| `src/tui.{hpp,cpp}` | `runTui` — interactive two-pane reader (FTXUI), async article loading |
 | `src/main.cpp` | args → cache-aware concurrent fetch → merge/dedup/sort → filter → print or TUI |
 | `tests/feed_test.cpp` | parsing-layer tests (run via CTest) |
 | `tests/store_test.cpp` | cache + read-store tests, using a temp dir |
@@ -124,11 +125,17 @@ right. Filters still apply, so `feedwire --tui --source CNBC` scopes the reader.
 | Key | Action |
 |-----|--------|
 | `↑`/`↓` or `j`/`k` | move selection |
+| `space` / `b` | scroll the article down / up |
 | `o` | open the selected story in your browser |
 | `q` / `Esc` | quit |
 
-Browsing a story marks it read (its `*` clears); read state is saved on quit.
-Needs a real terminal — piping/redirecting won't work.
+Selecting a story fetches its page in the background and extracts the article
+body into the right pane (RSS summary shown while it loads, or if extraction
+fails). The selected headline marquee-scrolls; browsing marks a story read (its
+`*` clears); read state is saved on quit. Needs a real terminal — piping won't work.
+
+Extracted article HTML is cached under `.cache/articles/` (6h), so reopening a
+story is instant.
 
 ### State on disk (`.cache/`)
 
@@ -190,6 +197,7 @@ Name|https://example.com/rss.xml
 | 0 — Spine | fetch → parse → dedup → sort → print | RAII over C API, `std::async`, move semantics | ✅ done |
 | 1 — State | disk TTL cache, `--search`/`--source`, read/unread | `std::filesystem`, caching, `std::optional`, `std::atomic` | ✅ done |
 | 2 — TUI | `--tui` two-pane reader, keyboard nav | FTXUI, event loop, render/state separation | ✅ done |
-| 3 — Read-through | fetch + extract article body into the detail pane | a real HTML parser (gumbo/lexbor) | next |
+| 3 — Read-through | async fetch + extract article body into the detail pane | background threads, mutex, HTML extraction | ✅ done |
 
-Each phase is an optional upgrade on the one before.
+Each phase is an optional upgrade on the one before. Possible next steps: a real
+HTML parser (gumbo/lexbor) for tougher pages, and grapheme-aware marquee/scroll.

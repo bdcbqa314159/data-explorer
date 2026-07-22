@@ -1,8 +1,10 @@
 // Plain-assert tests, no framework. Run with: ctest --preset default
+#include "article.hpp"
 #include "feed.hpp"
 
 #include <cassert>
 #include <iostream>
+#include <string>
 
 using namespace feedwire;
 
@@ -51,6 +53,23 @@ int main() {
 
   // Garbage in -> empty out, no throw.
   assert(parseFeed("not xml at all", "X").empty());
+
+  // --- extractArticle: keep prose, drop noise/short bits --------------------
+  const char* page = R"(<html><body><article>
+    <p>This is the first substantial paragraph of the article body text here.</p>
+    <script>var x = 'junk should be removed';</script>
+    <p>Short</p>
+    <p>Second substantial paragraph with plenty of words to be kept as well.</p>
+  </article></body></html>)";
+  auto paras = extractArticle(page);
+  assert(paras.size() == 2);  // two long <p>; short one and <script> dropped
+  assert(paras[0].find("first substantial") != std::string::npos);
+  assert(paras[1].find("Second substantial") != std::string::npos);
+  for (const auto& p : paras) {
+    assert(p.find("junk") == std::string::npos);  // script content gone
+    assert(p != "Short");
+  }
+  assert(extractArticle("<html>no article-ish content</html>").empty());
 
   std::cout << "all tests passed\n";
   return 0;

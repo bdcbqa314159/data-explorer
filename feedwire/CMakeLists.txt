@@ -60,6 +60,7 @@ add_executable(feedwire
   src/feed.cpp
   src/cache.cpp
   src/read_store.cpp
+  src/article.cpp
   src/tui.cpp
 )
 target_include_directories(feedwire PRIVATE src)
@@ -73,7 +74,7 @@ target_link_libraries(feedwire PRIVATE
 # No framework — plain asserts, run via CTest. Cross-platform, zero extra deps.
 enable_testing()
 
-add_executable(feed_test tests/feed_test.cpp src/feed.cpp)
+add_executable(feed_test tests/feed_test.cpp src/feed.cpp src/article.cpp)
 target_include_directories(feed_test PRIVATE src)
 target_link_libraries(feed_test PRIVATE pugixml::pugixml)
 add_test(NAME feed_test COMMAND feed_test)
