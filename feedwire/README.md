@@ -4,15 +4,16 @@ A personal terminal news aggregator. You give it a list of feed URLs; it fetches
 them all at once, merges them into one time-sorted stream, and prints a single
 curated view — so you read one place instead of browsing five sites.
 
-This is **Phase 0** (the spine): fetch → parse → dedup → sort → print. It is
-already useful on its own. Later phases (persistent state, a TUI, article
-read-through) build on top without changing this core.
+**Phase 0** was the spine: fetch → parse → dedup → sort → print.
+**Phase 1** (current) adds a disk TTL cache, search/source filters, and
+read/unread tracking — all on top of that spine, no rewrite.
 
 ```
- 12m  CNBC          Fed holds rates steady, signals one cut in 2026
- 34m  CoinDesk      Bitcoin reclaims $90k as ETF inflows resume
- 51m  Hacker News   Show HN: I built a terminal news reader in C++
+*  12m  CNBC          Fed holds rates steady, signals one cut in 2026
+*  34m  CoinDesk      Bitcoin reclaims $90k as ETF inflows resume
+   51m  Hacker News   Show HN: I built a terminal news reader in C++
 ```
+(A leading `*` marks an unread story.)
 
 ---
 
@@ -29,11 +30,21 @@ batch. That's the whole program.
 |------|----------------|
 | `src/http_client.{hpp,cpp}` | libcurl RAII wrappers; `httpGet(url)` (thread-safe per call) |
 | `src/feed.{hpp,cpp}` | `parseFeed`, `stripHtml`, `inferSentiment` — pure, no I/O |
-| `src/main.cpp` | config → concurrent fetch → merge/dedup/sort → print |
-| `tests/feed_test.cpp` | plain-assert tests for the parsing layer (run via CTest) |
+| `src/cache.{hpp,cpp}` | `FeedCache` — disk TTL cache of raw feed bodies, with stale fallback |
+| `src/read_store.{hpp,cpp}` | `ReadStore` — persistent set of read item urls |
+| `src/main.cpp` | args → cache-aware concurrent fetch → merge/dedup/sort → filter → print |
+| `tests/feed_test.cpp` | parsing-layer tests (run via CTest) |
+| `tests/store_test.cpp` | cache + read-store tests, using a temp dir |
 
 The I/O layer (`http_client`) and the pure logic (`feed`) are kept separate so the
-parser is trivially testable without a network — see `feed_test.cpp`.
+parser is trivially testable without a network. `cache` and `read_store` are
+best-effort: any filesystem error degrades to "no cache" instead of throwing.
+
+### Fetch path (Phase 1)
+
+Per feed: **fresh cache?** use it → else **fetch** and cache it → else (network
+down) **fall back to any cached copy, even stale**. So a warm run is instant and
+offline, and a network blip still shows the last-known stories.
 
 ---
 
@@ -84,12 +95,39 @@ ctest --preset default        # runs the parser tests
 ### 3. Run
 
 ```sh
-./build/feedwire              # uses ./feeds.txt
-./build/feedwire my-feeds.txt # or point at another list
+./build/feedwire                 # all stories, newest first
+./build/feedwire --unread        # only what's new since you last caught up
+./build/feedwire --search bitcoin
+./build/feedwire --source CNBC
+./build/feedwire --mark-read     # mark the shown stories read, then exit
+./build/feedwire --help
 ```
 
 On Windows the binary lands at `build\Release\feedwire.exe` (multi-config
 generator).
+
+### Flags
+
+| Flag | Effect |
+|------|--------|
+| `--config PATH` / positional | feed list (default `feeds.txt`) |
+| `--search TERM` | keep stories whose title/summary contains TERM (case-insensitive) |
+| `--source NAME` | keep stories from one feed (case-insensitive) |
+| `--ttl MINUTES` | cache freshness window (default 10) |
+| `--no-cache` | always refetch, ignore fresh cache |
+| `--unread` | only stories not yet marked read |
+| `--mark-read` | mark the shown stories read, then exit |
+
+A typical loop: `feedwire --unread` to see what's new, then `feedwire --mark-read`
+to catch up.
+
+### State on disk (`.cache/`)
+
+- `feed_<hash>.txt` — one cached feed body each (first line = fetch time).
+- `read.txt` — urls you've marked read, one per line.
+
+Delete `.cache/` any time to reset; it's rebuilt on the next run and is
+git-ignored.
 
 ---
 
@@ -134,12 +172,13 @@ Name|https://example.com/rss.xml
 
 ---
 
-## Roadmap (later phases, not built yet)
+## Roadmap
 
-| Phase | Adds | New C++ ground |
-|-------|------|----------------|
-| 1 — State | disk TTL cache, `--search`, per-source filter, read/unread | file I/O, caching, `std::optional`, maybe SQLite |
-| 2 — TUI | two-pane list ↔ read-through, keyboard nav | FTXUI, event loop, render/state separation |
-| 3 — Read-through | fetch + extract article body | a real HTML parser (gumbo/lexbor) |
+| Phase | Adds | New C++ ground | Status |
+|-------|------|----------------|--------|
+| 0 — Spine | fetch → parse → dedup → sort → print | RAII over C API, `std::async`, move semantics | ✅ done |
+| 1 — State | disk TTL cache, `--search`/`--source`, read/unread | `std::filesystem`, caching, `std::optional`, `std::atomic` | ✅ done |
+| 2 — TUI | two-pane list ↔ read-through, keyboard nav | FTXUI, event loop, render/state separation | next |
+| 3 — Read-through | fetch + extract article body | a real HTML parser (gumbo/lexbor) | later |
 
-Get Phase 0 green first; each later phase is an optional upgrade.
+Each phase is an optional upgrade on the one before.
