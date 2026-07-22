@@ -1,0 +1,7 @@
+# feedwire feed list — "Name|URL", one per line. Lines starting with # are ignored.
+# Edit freely; these are just starters covering finance + tech.
+CNBC|https://www.cnbc.com/id/100003114/device/rss/rss.html
+CoinDesk|https://www.coindesk.com/arc/outboundfeeds/rss/
+Hacker News|https://news.ycombinator.com/rss
+NYT Tech|https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml
+BBC Business|https://feeds.bbci.co.uk/news/business/rss.xml
