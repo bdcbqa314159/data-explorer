@@ -20,7 +20,8 @@ using namespace ftxui;
 
 namespace {
 
-constexpr size_t kTitleWidth = 30;  // marquee window for the selected row
+constexpr size_t kTitleWidth = 30;   // marquee window for the selected row
+constexpr long kMarqueeMsPerChar = 260;  // scroll step; higher = slower/smoother
 
 std::string relTime(std::chrono::system_clock::time_point tp) {
   using namespace std::chrono;
@@ -142,7 +143,7 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
   auto renderer = Renderer(list, [&] {
     using namespace std::chrono;
     const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - startTime).count();
-    marqueeOffset = static_cast<size_t>(elapsed / 180);  // ~5.5 chars/sec
+    marqueeOffset = static_cast<size_t>(elapsed / kMarqueeMsPerChar);
 
     if (selected != lastSelected) {
       lastSelected = selected;
