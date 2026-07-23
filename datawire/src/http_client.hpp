@@ -1,0 +1,19 @@
+#pragma once
+#include <string>
+
+namespace datawire {
+
+// One-time libcurl global init/cleanup, RAII. Construct once in main before any
+// httpGet call (curl's global init is not thread-safe).
+class CurlGlobal {
+public:
+  CurlGlobal();
+  ~CurlGlobal();
+  CurlGlobal(const CurlGlobal&) = delete;
+  CurlGlobal& operator=(const CurlGlobal&) = delete;
+};
+
+// GET a URL, return the body. Throws std::runtime_error on failure (net/TLS/HTTP>=400).
+std::string httpGet(const std::string& url, long timeoutSeconds = 20);
+
+}  // namespace datawire
