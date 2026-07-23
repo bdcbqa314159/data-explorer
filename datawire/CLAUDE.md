@@ -124,7 +124,17 @@ no chart lib unless it clearly pays off).
 - Commit messages: short, single line, `datawire: <what>`. No co-author lines, no tags.
 - Separation: pure parse/normalize logic has no I/O; I/O and UI in their own modules.
 
-## Status
+## Status — Phase 0 in progress
 
-Design only. Nothing built yet. Next step when ready: Phase 0 (FRED board + catalog
-search). Verify FRED's exact API/endpoints and get a free API key first.
+Built & live-verified: `Series` model, FRED adapter (`series`, `series/observations`,
+`series/search`) with parser tests, secure API-key storage (0600 file + env override),
+and the **two-pane board** (grouped list ↔ live detail with FTXUI chart, `w` window,
+`o` open source). Data path confirmed against live FRED.
+
+CLI: `datawire` (board) · `datawire get <ID>` · `datawire search <text>` · `datawire key set`.
+Watchlist: `watchlist.txt` (`# Group` headers + FRED ids).
+
+**Not verified headless** (drive the board in a terminal): list scroll-follow,
+chart rendering, `w` window toggle, `o` open.
+**Still to do in Phase 0:** in-app catalog search overlay (`a`) — currently search is
+CLI-only; wiring it into the board (add-to-watchlist) is the next slice.

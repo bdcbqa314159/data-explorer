@@ -1,0 +1,13 @@
+# datawire watchlist — one FRED series id per line. "# Group" lines start a group.
+# Edit freely; find ids with `datawire search "<text>"`.
+
+# GROWTH & LABOR
+UNRATE
+PAYEMS
+
+# PRICES
+CPIAUCSL
+
+# CREDIT
+DRCCLACBS
+MORTGAGE30US

@@ -1,3 +1,4 @@
+#include "board.hpp"
 #include "credentials.hpp"
 #include "fred.hpp"
 #include "http_client.hpp"
@@ -53,10 +54,11 @@ int runKeyCommand(int argc, char** argv) {
 
 }  // namespace
 
-// Phase 0 CLI probe (the two-pane TUI comes next):
+//   datawire                     -> the two-pane board (watchlist.txt)
+//   datawire board [watchlist]   -> board from a specific watchlist
 //   datawire key set             -> store the API key securely
 //   datawire key                 -> show key status (masked)
-//   datawire UNRATE              -> one series' latest value + count
+//   datawire get UNRATE          -> probe one series' latest value + count
 //   datawire search "credit ..." -> catalog search results
 int main(int argc, char** argv) {
   const std::string cmd = argc > 1 ? argv[1] : "";
@@ -71,6 +73,12 @@ int main(int argc, char** argv) {
   }
 
   CurlGlobal curlGlobal;
+
+  if (cmd.empty() || cmd == "board") {
+    const std::string wl = (cmd == "board" && argc > 2) ? argv[2] : "watchlist.txt";
+    return runBoard(wl, *key);
+  }
+
   try {
     if (cmd == "search" && argc > 2) {
       for (const auto& r : searchSeries(argv[2], *key)) {
@@ -78,16 +86,18 @@ int main(int argc, char** argv) {
       }
       return 0;
     }
-
-    const std::string id = argc > 1 ? argv[1] : "UNRATE";
-    const Series s = fetchSeries(id, *key);
-    std::cout << s.meta.title << "  (" << s.meta.id << ", " << s.meta.frequency
-              << ", " << s.meta.unit << ")\n";
-    if (const auto* o = s.latest()) {
-      std::cout << "latest: " << o->value << " on " << o->date << "\n";
+    if (cmd == "get" && argc > 2) {
+      const Series s = fetchSeries(argv[2], *key);
+      std::cout << s.meta.title << "  (" << s.meta.id << ", " << s.meta.frequency
+                << ", " << s.meta.unit << ")\n";
+      if (const auto* o = s.latest()) {
+        std::cout << "latest: " << o->value << " on " << o->date << "\n";
+      }
+      std::cout << s.observations.size() << " observations · " << s.meta.sourceUrl << "\n";
+      return 0;
     }
-    std::cout << s.observations.size() << " observations · " << s.meta.sourceUrl << "\n";
-    return 0;
+    std::cerr << "usage: datawire [board [watchlist]] | get <ID> | search <text> | key [set]\n";
+    return 2;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";
     return 1;

@@ -38,18 +38,33 @@ FetchContent_Declare(nlohmann_json
   GIT_SHALLOW    TRUE
 )
 
-FetchContent_MakeAvailable(curl nlohmann_json)
+# --- FTXUI: terminal UI for the two-pane board ---------------------------
+set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(ftxui
+  GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+  GIT_TAG        v5.0.0
+  GIT_SHALLOW    TRUE
+)
+
+FetchContent_MakeAvailable(curl nlohmann_json ftxui)
 
 # --- main binary ---------------------------------------------------------
 add_executable(datawire
   src/main.cpp
+  src/board.cpp
   src/credentials.cpp
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp
 )
 target_include_directories(datawire PRIVATE src)
-target_link_libraries(datawire PRIVATE CURL::libcurl nlohmann_json::nlohmann_json)
+target_link_libraries(datawire PRIVATE
+  CURL::libcurl
+  nlohmann_json::nlohmann_json
+  ftxui::component ftxui::dom ftxui::screen
+)
 
 # --- tests ---------------------------------------------------------------
 # Pure parser tests — no network, no curl.
