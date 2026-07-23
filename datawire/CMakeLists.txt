@@ -58,6 +58,7 @@ add_executable(datawire
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp
+  src/window.cpp
 )
 target_include_directories(datawire PRIVATE src)
 target_link_libraries(datawire PRIVATE
@@ -73,3 +74,8 @@ add_executable(fred_test tests/fred_test.cpp src/fred_parse.cpp)
 target_include_directories(fred_test PRIVATE src)
 target_link_libraries(fred_test PRIVATE nlohmann_json::nlohmann_json)
 add_test(NAME fred_test COMMAND fred_test)
+
+# window math — pure, no deps.
+add_executable(window_test tests/window_test.cpp src/window.cpp)
+target_include_directories(window_test PRIVATE src)
+add_test(NAME window_test COMMAND window_test)

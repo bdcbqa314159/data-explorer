@@ -3,6 +3,7 @@
 #include "fred.hpp"
 #include "http_client.hpp"
 #include "series.hpp"
+#include "window.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -73,17 +74,6 @@ std::vector<std::pair<std::string, std::string>> loadWatchlist(const std::string
     const auto e = line.find_first_of(" \t\r\n");
     out.emplace_back(group, line.substr(0, e));
   }
-  return out;
-}
-
-std::vector<Observation> windowFilter(const std::vector<Observation>& obs, int years) {
-  if (years >= 1000 || obs.empty()) return obs;
-  const std::string& last = obs.back().date;
-  if (last.size() < 4) return obs;
-  const std::string cutoff = std::to_string(std::stoi(last.substr(0, 4)) - years) + last.substr(4);
-  std::vector<Observation> out;
-  for (const auto& o : obs)
-    if (o.date >= cutoff) out.push_back(o);
   return out;
 }
 
@@ -181,6 +171,15 @@ Element detailPane(const BoardSignal& s, Window win) {
   });
 }
 
+// Deep-link to FRED, carrying the current window as ?cosd= so the source page
+// opens at the same start date the analyst is viewing.
+std::string openUrl(const BoardSignal& s, Window win) {
+  const std::string base = s.series.meta.sourceUrl.empty() ? fredSeriesPage(s.id) : s.series.meta.sourceUrl;
+  if (win == Window::MAX || s.series.observations.empty()) return base;
+  const std::string cutoff = windowCutoff(s.series.observations.back().date, yearsOf(win));
+  return cutoff.empty() ? base : base + "?cosd=" + cutoff;
+}
+
 // Open a url in the OS browser; refuse anything that isn't a plain http(s) url.
 void openInBrowser(const std::string& url) {
   if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) return;
@@ -260,8 +259,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     if (e == Event::Character('k') || e == Event::ArrowUp) { if (selected > 0) --selected; return true; }
     if (e == Event::Character('w')) { win = nextWindow(win); return true; }
     if (e == Event::Character('o')) {
-      const auto& s = signals[selected];
-      openInBrowser(s.series.meta.sourceUrl.empty() ? fredSeriesPage(s.id) : s.series.meta.sourceUrl);
+      openInBrowser(openUrl(signals[selected], win));
       return true;
     }
     return false;
