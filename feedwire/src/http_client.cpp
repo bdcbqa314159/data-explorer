@@ -24,6 +24,13 @@ size_t appendToString(char* ptr, size_t size, size_t nmemb, void* userdata) {
   return bytes;
 }
 
+// curl progress callback: return non-zero to abort the transfer. We use it only
+// to poll a caller-supplied cancel flag.
+int abortIfCancelled(void* userdata, curl_off_t, curl_off_t, curl_off_t, curl_off_t) {
+  const auto* cancel = static_cast<const std::atomic<bool>*>(userdata);
+  return (cancel && cancel->load()) ? 1 : 0;
+}
+
 // RAII for a curl easy handle so we never leak it, even if setopt/perform throw.
 struct EasyHandle {
   CURL* h = curl_easy_init();
@@ -39,7 +46,8 @@ struct EasyHandle {
 
 }  // namespace
 
-std::string httpGet(const std::string& url, long timeoutSeconds) {
+std::string httpGet(const std::string& url, long timeoutSeconds,
+                    const std::atomic<bool>* cancel) {
   EasyHandle easy;
   std::string body;
 
@@ -50,6 +58,11 @@ std::string httpGet(const std::string& url, long timeoutSeconds) {
   curl_easy_setopt(easy.h, CURLOPT_TIMEOUT, timeoutSeconds);
   curl_easy_setopt(easy.h, CURLOPT_USERAGENT, "feedwire/0.1");
   curl_easy_setopt(easy.h, CURLOPT_ACCEPT_ENCODING, "");     // enable gzip/deflate
+  if (cancel) {
+    curl_easy_setopt(easy.h, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(easy.h, CURLOPT_XFERINFOFUNCTION, abortIfCancelled);
+    curl_easy_setopt(easy.h, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(cancel));
+  }
 
   const CURLcode rc = curl_easy_perform(easy.h);
   if (rc != CURLE_OK) {

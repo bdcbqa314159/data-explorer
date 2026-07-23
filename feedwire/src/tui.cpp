@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <future>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -92,38 +93,71 @@ Element rowElement(const NewsItem& it, bool unread, bool focused, size_t offset)
   return hbox({dot, time, src, title | flex});
 }
 
-Element detailElement(const NewsItem& it, const ArticleState& art, int scroll) {
-  Elements e;
-  e.push_back(text(it.title) | bold);
-  e.push_back(separator());
-  e.push_back(hbox({
+// Greedy word-wrap to `width` columns. ponytail: byte width, so multibyte lines
+// wrap a touch short — fine for reading, upgrade with a grapheme width later.
+std::vector<std::string> wrapText(const std::string& s, size_t width) {
+  std::vector<std::string> lines;
+  std::istringstream ss(s);
+  std::string word, line;
+  while (ss >> word) {
+    if (line.empty()) line = word;
+    else if (line.size() + 1 + word.size() <= width) line += " " + word;
+    else { lines.push_back(line); line = word; }
+  }
+  if (!line.empty()) lines.push_back(line);
+  return lines;
+}
+
+// `scroll` is clamped in place against the wrapped-line count so paging stays
+// bounded; `width`/`visible` come from the live terminal size.
+Element detailElement(const NewsItem& it, const ArticleState& art, int& scroll,
+                      int width, int visible) {
+  Elements head;
+  head.push_back(text(it.title) | bold);
+  head.push_back(separator());
+  head.push_back(hbox({
       text(it.source) | color(Color::Yellow),
       text("   "),
       text(relTime(it.published) + " ago") | dim,
       text("   "),
       text(it.sentiment) | color(sentimentColor(it.sentiment)),
   }));
-  e.push_back(text(it.url) | dim);
-  e.push_back(separator());
+  head.push_back(text(it.url) | dim);
+  head.push_back(separator());
 
   if (art.status == ArticleState::Loading) {
-    e.push_back(text("Loading article…") | dim);
-    e.push_back(text(""));
-    e.push_back(paragraph(it.summary.empty() ? "(no summary)" : it.summary));
-  } else if (art.status == ArticleState::Failed || art.paragraphs.empty()) {
-    e.push_back(paragraph(it.summary.empty() ? "(no summary)" : it.summary));
-    e.push_back(text(""));
-    e.push_back(text("Full text unavailable — press o to open in browser") | dim);
-  } else {
-    const int n = static_cast<int>(art.paragraphs.size());
-    const int start = std::clamp(scroll, 0, n - 1);
-    if (start > 0) e.push_back(text("↑ scrolled — b for top") | dim);
-    for (int i = start; i < n; ++i) {
-      e.push_back(paragraph(art.paragraphs[i]));
-      e.push_back(text(""));
-    }
+    scroll = 0;
+    head.push_back(text("Loading article…") | dim);
+    head.push_back(text(""));
+    head.push_back(paragraph(it.summary.empty() ? "(no summary)" : it.summary));
+    return vbox(std::move(head)) | flex;
   }
-  return vbox(std::move(e)) | flex;
+  if (art.status == ArticleState::Failed || art.paragraphs.empty()) {
+    scroll = 0;
+    head.push_back(paragraph(it.summary.empty() ? "(no summary)" : it.summary));
+    head.push_back(text(""));
+    head.push_back(text("Full text unavailable — press o to open in browser") | dim);
+    return vbox(std::move(head)) | flex;
+  }
+
+  // Flatten the article to display lines, then show a window of them.
+  std::vector<std::string> lines;
+  for (const auto& p : art.paragraphs) {
+    for (auto& l : wrapText(p, static_cast<size_t>(std::max(20, width)))) lines.push_back(std::move(l));
+    lines.push_back("");  // blank between paragraphs
+  }
+  const int total = static_cast<int>(lines.size());
+  const int maxScroll = std::max(0, total - visible);
+  scroll = std::clamp(scroll, 0, maxScroll);
+
+  Elements body;
+  body.push_back(scroll > 0 ? (text("  ↑ more above") | dim) : text(""));
+  for (int i = scroll; i < std::min(total, scroll + visible); ++i)
+    body.push_back(lines[i].empty() ? text(" ") : text(lines[i]));
+  body.push_back(scroll < maxScroll ? (text("  ↓ more below") | dim) : text(""));
+
+  for (auto& b : body) head.push_back(std::move(b));
+  return vbox(std::move(head)) | flex;
 }
 
 // Open a url in the OS browser. Best-effort; refuses anything that isn't a plain
@@ -158,7 +192,9 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
   FeedCache articleCache(".cache/articles");
   std::mutex mu;
   std::unordered_map<std::string, ArticleState> articles;
+  std::atomic<bool> cancelFetch{false};  // tripped on quit to abort in-flight fetches
   std::vector<std::future<void>> tasks;
+  int pageStep = 5;  // article scroll step, updated from the live pane height
 
   auto ensureLoading = [&](const std::string& url) {
     {
@@ -173,7 +209,7 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
         if (auto cached = articleCache.get(url, std::chrono::hours(6))) {
           html = *cached;
         } else {
-          html = httpGet(url, 10);  // ponytail: up to 10s hangs a quit mid-fetch
+          html = httpGet(url, 10, &cancelFetch);  // abortable on quit
           articleCache.put(url, html);
         }
         st.paragraphs = extractArticle(html);
@@ -234,13 +270,18 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
     Element footer =
         text(" ↑/↓ or j/k list  ·  space/b scroll article  ·  o open  ·  q quit ") | dim;
 
+    // Approximate the detail pane from the live terminal size (chrome removed).
+    const int detailWidth = std::max(20, screen.dimx() - 52 - 4);
+    const int detailVisible = std::max(3, screen.dimy() - 12);
+    pageStep = std::max(1, detailVisible - 2);
+
     return vbox({
                header,
                separator(),
                hbox({
                    list->Render() | vscroll_indicator | frame | size(WIDTH, EQUAL, 52),
                    separator(),
-                   detailElement(cur, art, detailScroll) | flex,
+                   detailElement(cur, art, detailScroll, detailWidth, detailVisible) | flex,
                }) | flex,
                separator(),
                footer,
@@ -265,12 +306,12 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
       if (selected > 0) --selected;
       return true;
     }
-    if (e == Event::Character(' ')) {  // scroll article down
-      ++detailScroll;
+    if (e == Event::Character(' ')) {  // page article down
+      detailScroll += pageStep;
       return true;
     }
-    if (e == Event::Character('b')) {  // scroll article up
-      if (detailScroll > 0) --detailScroll;
+    if (e == Event::Character('b')) {  // page article up
+      detailScroll = std::max(0, detailScroll - pageStep);
       return true;
     }
     return false;
@@ -286,6 +327,7 @@ void runTui(std::vector<NewsItem>& stories, ReadStore& readStore) {
   });
 
   screen.Loop(renderer);
+  cancelFetch.store(true);  // abort any in-flight article fetch so futures join fast
   running.store(false);
   ticker.join();
   readStore.save();

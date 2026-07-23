@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <string>
 
 namespace feedwire {
@@ -17,6 +18,10 @@ public:
 // GET a URL, return the body as text. Throws std::runtime_error on any failure
 // (network, TLS, HTTP >= 400). Uses its own easy handle per call, so it is safe
 // to call concurrently from std::async tasks.
-std::string httpGet(const std::string& url, long timeoutSeconds = 15);
+//
+// If `cancel` is non-null and becomes true mid-transfer, the request aborts
+// promptly (throws) — lets a caller stop an in-flight fetch, e.g. on quit.
+std::string httpGet(const std::string& url, long timeoutSeconds = 15,
+                    const std::atomic<bool>* cancel = nullptr);
 
 }  // namespace feedwire

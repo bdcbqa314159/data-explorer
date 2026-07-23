@@ -51,7 +51,23 @@ FetchContent_Declare(ftxui
   GIT_SHALLOW    TRUE
 )
 
-FetchContent_MakeAvailable(pugixml curl ftxui)
+# --- libxml2: tolerant HTML parser for article extraction (Phase 3) ------
+# Keep HTML + XPath (defaults ON); drop everything else so it builds lean.
+set(LIBXML2_WITH_PYTHON OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_ICONV OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_ICU OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_LZMA OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_ZLIB OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_HTTP OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(LIBXML2_WITH_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(libxml2
+  GIT_REPOSITORY https://github.com/GNOME/libxml2.git
+  GIT_TAG        v2.13.5
+  GIT_SHALLOW    TRUE
+)
+
+FetchContent_MakeAvailable(pugixml curl ftxui libxml2)
 
 # --- main binary ---------------------------------------------------------
 add_executable(feedwire
@@ -67,6 +83,7 @@ target_include_directories(feedwire PRIVATE src)
 target_link_libraries(feedwire PRIVATE
   CURL::libcurl
   pugixml::pugixml
+  LibXml2::LibXml2
   ftxui::component ftxui::dom ftxui::screen
 )
 
@@ -76,7 +93,7 @@ enable_testing()
 
 add_executable(feed_test tests/feed_test.cpp src/feed.cpp src/article.cpp)
 target_include_directories(feed_test PRIVATE src)
-target_link_libraries(feed_test PRIVATE pugixml::pugixml)
+target_link_libraries(feed_test PRIVATE pugixml::pugixml LibXml2::LibXml2)
 add_test(NAME feed_test COMMAND feed_test)
 
 # store_test needs no third-party deps (filesystem only).

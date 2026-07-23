@@ -32,7 +32,7 @@ batch. That's the whole program.
 | `src/feed.{hpp,cpp}` | `parseFeed`, `stripHtml`, `inferSentiment` — pure, no I/O |
 | `src/cache.{hpp,cpp}` | `FeedCache` — disk TTL cache of raw feed bodies, with stale fallback |
 | `src/read_store.{hpp,cpp}` | `ReadStore` — persistent set of read item urls |
-| `src/article.{hpp,cpp}` | `extractArticle` — pull readable prose from raw HTML |
+| `src/article.{hpp,cpp}` | `extractArticle` — readable prose from raw HTML via libxml2 + XPath |
 | `src/tui.{hpp,cpp}` | `runTui` — interactive two-pane reader (FTXUI), async article loading |
 | `src/main.cpp` | args → cache-aware concurrent fetch → merge/dedup/sort → filter → print or TUI |
 | `tests/feed_test.cpp` | parsing-layer tests (run via CTest) |
@@ -62,6 +62,8 @@ are pinned to a tag in `CMakeLists.txt`:
   Built slim: HTTP(S) only, static, no exe/tests/docs.
 - **pugixml** — small, fast XML parser for RSS/Atom.
 - **FTXUI** — terminal UI library for the interactive `--tui` reader.
+- **libxml2** — tolerant HTML parser + XPath, for extracting article bodies from
+  real-world (often broken) markup.
 
 The only host prerequisites are a C++20 compiler, CMake ≥ 3.21, and git.
 On **Linux** you also need OpenSSL dev headers for the TLS backend
@@ -129,10 +131,13 @@ right. Filters still apply, so `feedwire --tui --source CNBC` scopes the reader.
 | `o` | open the selected story in your browser |
 | `q` / `Esc` | quit |
 
-Selecting a story fetches its page in the background and extracts the article
-body into the right pane (RSS summary shown while it loads, or if extraction
-fails). The selected headline marquee-scrolls; browsing marks a story read (its
-`*` clears); read state is saved on quit. Needs a real terminal — piping won't work.
+Selecting a story fetches its page in the background (abortable — quitting mid-fetch
+doesn't hang) and extracts the article body into the right pane via libxml2. The RSS
+summary shows while it loads, or if extraction fails — e.g. paywalled or
+JavaScript-rendered pages, which have no server-side article text to parse; press
+`o` to open those in a browser. The selected headline marquee-scrolls; browsing
+marks a story read (its `*` clears); read state is saved on quit. Needs a real
+terminal — piping won't work.
 
 Extracted article HTML is cached under `.cache/articles/` (6h), so reopening a
 story is instant.
@@ -197,7 +202,9 @@ Name|https://example.com/rss.xml
 | 0 — Spine | fetch → parse → dedup → sort → print | RAII over C API, `std::async`, move semantics | ✅ done |
 | 1 — State | disk TTL cache, `--search`/`--source`, read/unread | `std::filesystem`, caching, `std::optional`, `std::atomic` | ✅ done |
 | 2 — TUI | `--tui` two-pane reader, keyboard nav | FTXUI, event loop, render/state separation | ✅ done |
-| 3 — Read-through | async fetch + extract article body into the detail pane | background threads, mutex, HTML extraction | ✅ done |
+| 3 — Read-through | async fetch (abortable) + libxml2 extraction, line-scrolled | threads, mutex, cancellation, HTML/XPath | ✅ done |
 
-Each phase is an optional upgrade on the one before. Possible next steps: a real
-HTML parser (gumbo/lexbor) for tougher pages, and grapheme-aware marquee/scroll.
+Each phase is an optional upgrade on the one before. The main remaining limit is
+inherent, not a code smell: JavaScript-rendered pages have no server-side article
+text, so they'd need a headless browser (out of scope) — `o` opens them instead.
+A possible refinement: grapheme-aware marquee/wrap for non-ASCII scripts.
