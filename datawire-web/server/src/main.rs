@@ -29,14 +29,21 @@ async fn main() {
         http: reqwest::Client::new(),
     };
 
+    // Resolve the WASM dir relative to this crate (not the invocation cwd), so
+    // `cargo run` works from anywhere. Override with DATAWIRE_DIST if needed.
+    let dist = std::env::var("DATAWIRE_DIST")
+        .unwrap_or_else(|_| format!("{}/../client/dist", env!("CARGO_MANIFEST_DIR")));
+    if !std::path::Path::new(&dist).join("index.html").exists() {
+        eprintln!("warning: {dist}/index.html not found — run `trunk build` in client/ first");
+    }
+
     let app = Router::new()
         .route("/api/series/:id", get(series_handler))
-        // Everything else is the WASM client (run `trunk build` in client/ first).
-        .fallback_service(ServeDir::new("client/dist"))
+        .fallback_service(ServeDir::new(&dist))
         .with_state(state);
 
     let addr = "127.0.0.1:8080";
-    println!("datawire-server on http://{addr}");
+    println!("datawire-server on http://{addr}  (serving {dist})");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
