@@ -1,6 +1,6 @@
 use datawire_shared::{Series, WatchItem};
 use eframe::egui;
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{HoverPosition, Line, Plot, PlotPoints};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -71,6 +71,13 @@ fn to_x(date: &str) -> f64 {
     y + (m - 1.0) / 12.0
 }
 
+// decimal year -> (year, month) for axis/hover labels.
+fn x_to_ym(x: f64) -> (i32, i32) {
+    let year = x.floor() as i32;
+    let month = (((x - year as f64) * 12.0).round() as i32 + 1).clamp(1, 12);
+    (year, month)
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Left: the watchlist.
@@ -139,9 +146,34 @@ impl eframe::App for App {
                     ));
                     let points: PlotPoints =
                         s.observations.iter().map(|o| [to_x(&o.date), o.value]).collect();
-                    Plot::new("series")
+                    // Per-series id so each series keeps its own view (fixes the
+                    // "wrong scale" from inheriting the previous series' zoom).
+                    Plot::new(format!("plot-{}", s.meta.id))
                         .allow_zoom(true)
                         .allow_drag(true)
+                        .y_axis_label(s.meta.unit.clone())
+                        .x_axis_formatter(|mark, range| {
+                            let span = *range.end() - *range.start();
+                            let (y, m) = x_to_ym(mark.value);
+                            if span <= 3.0 {
+                                format!("{y}-{m:02}")
+                            } else {
+                                format!("{y}")
+                            }
+                        })
+                        .label_formatter(|pos| {
+                            let (name, p) = match pos {
+                                HoverPosition::NearDataPoint { plot_name, position, .. } => {
+                                    (Some(*plot_name), *position)
+                                }
+                                HoverPosition::Elsewhere { position } => (None, *position),
+                            };
+                            let (y, m) = x_to_ym(p.x);
+                            Some(match name {
+                                Some(n) => format!("{n}\n{y}-{m:02}:  {:.2}", p.y),
+                                None => format!("{y}-{m:02}:  {:.2}", p.y),
+                            })
+                        })
                         .show(ui, |plot_ui| {
                             plot_ui.line(Line::new(s.meta.id.clone(), points));
                         });
