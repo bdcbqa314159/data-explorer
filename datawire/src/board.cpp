@@ -146,6 +146,18 @@ Element recentObs(const std::vector<Observation>& obs) {
   return vbox(std::move(rows));
 }
 
+// Deep-link to the FRED graph tool, carrying the window via cosd so the page
+// opens at the same start date. (The plain /series/ page ignores cosd.)
+std::string openUrl(const BoardSignal& s, Window win) {
+  const std::string id = s.series.meta.id.empty() ? s.id : s.series.meta.id;
+  std::string url = "https://fred.stlouisfed.org/graph/?id=" + id;
+  if (win != Window::MAX && !s.series.observations.empty()) {
+    const std::string cutoff = windowCutoff(s.series.observations.back().date, yearsOf(win));
+    if (!cutoff.empty()) url += "&cosd=" + cutoff;
+  }
+  return url;
+}
+
 Element detailPane(const BoardSignal& s, Window win) {
   const auto& m = s.series.meta;
   if (s.failed) {
@@ -167,23 +179,15 @@ Element detailPane(const BoardSignal& s, Window win) {
       chartElement(wobs) | flex,
       separator(),
       recentObs(wobs),
-      text(m.sourceUrl.empty() ? fredSeriesPage(s.id) : m.sourceUrl) | dim,
+      text(openUrl(s, win)) | dim,
   });
 }
 
-// Deep-link to FRED, carrying the current window as ?cosd= so the source page
-// opens at the same start date the analyst is viewing.
-std::string openUrl(const BoardSignal& s, Window win) {
-  const std::string base = s.series.meta.sourceUrl.empty() ? fredSeriesPage(s.id) : s.series.meta.sourceUrl;
-  if (win == Window::MAX || s.series.observations.empty()) return base;
-  const std::string cutoff = windowCutoff(s.series.observations.back().date, yearsOf(win));
-  return cutoff.empty() ? base : base + "?cosd=" + cutoff;
-}
-
-// Open a url in the OS browser; refuse anything that isn't a plain http(s) url.
+// Open a url in the OS browser. Reject only chars that are dangerous inside a
+// double-quoted shell argument — so '&' in a query string is fine (it's quoted).
 void openInBrowser(const std::string& url) {
   if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0) return;
-  if (url.find_first_of("\"'`$;|&<>\\ \n\r\t") != std::string::npos) return;
+  if (url.find_first_of("\"'`$\\ \n\r\t") != std::string::npos) return;
 #if defined(_WIN32)
   const std::string cmd = "start \"\" \"" + url + "\"";
 #elif defined(__APPLE__)
