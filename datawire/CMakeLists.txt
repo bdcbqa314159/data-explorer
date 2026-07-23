@@ -43,6 +43,7 @@ FetchContent_MakeAvailable(curl nlohmann_json)
 # --- main binary ---------------------------------------------------------
 add_executable(datawire
   src/main.cpp
+  src/credentials.cpp
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp

@@ -1,34 +1,86 @@
+#include "credentials.hpp"
 #include "fred.hpp"
 #include "http_client.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <iostream>
 #include <string>
 
 using namespace datawire;
 
-// Phase 0 CLI probe (the two-pane TUI comes next). Verifies the FRED adapter
-// end to end:
+namespace {
+
+std::string trim(std::string s) {
+  auto notspace = [](unsigned char c) { return !std::isspace(c); };
+  s.erase(s.begin(), std::find_if(s.begin(), s.end(), notspace));
+  s.erase(std::find_if(s.rbegin(), s.rend(), notspace).base(), s.end());
+  return s;
+}
+
+std::string mask(const std::string& k) {
+  if (k.size() <= 4) return "****";
+  return std::string(k.size() - 4, '*') + k.substr(k.size() - 4);
+}
+
+int runKeyCommand(int argc, char** argv) {
+  const std::string sub = argc > 2 ? argv[2] : "status";
+  if (sub == "set") {
+    std::cout << "Paste your FRED API key (stored to a 0600 file, not shell history): ";
+    std::string k;
+    std::getline(std::cin, k);
+    k = trim(k);
+    if (k.empty()) {
+      std::cerr << "No key entered.\n";
+      return 1;
+    }
+    saveApiKey(k);
+    std::cout << "Saved to " << credentialsPath().string() << " (permissions 600).\n";
+    return 0;
+  }
+  // status
+  const auto k = loadApiKey();
+  std::cout << "credentials file: " << credentialsPath().string() << "\n";
+  if (k) {
+    const bool fromEnv = std::getenv("FRED_API_KEY") != nullptr;
+    std::cout << "key: " << mask(*k) << (fromEnv ? "  (from FRED_API_KEY env)" : "  (from file)") << "\n";
+  } else {
+    std::cout << "key: not set — run `datawire key set`\n";
+  }
+  return 0;
+}
+
+}  // namespace
+
+// Phase 0 CLI probe (the two-pane TUI comes next):
+//   datawire key set             -> store the API key securely
+//   datawire key                 -> show key status (masked)
 //   datawire UNRATE              -> one series' latest value + count
-//   datawire search unemployment -> catalog search results
+//   datawire search "credit ..." -> catalog search results
 int main(int argc, char** argv) {
-  const char* key = std::getenv("FRED_API_KEY");
-  if (!key || !*key) {
-    std::cerr << "Set FRED_API_KEY (free: https://fredaccount.stlouisfed.org/apikeys)\n";
+  const std::string cmd = argc > 1 ? argv[1] : "";
+
+  if (cmd == "key") return runKeyCommand(argc, argv);
+
+  const auto key = loadApiKey();
+  if (!key) {
+    std::cerr << "No FRED API key. Run `datawire key set` "
+                 "(free key: https://fredaccount.stlouisfed.org/apikeys)\n";
     return 1;
   }
 
   CurlGlobal curlGlobal;
   try {
-    if (argc > 2 && std::string(argv[1]) == "search") {
-      for (const auto& r : searchSeries(argv[2], key)) {
+    if (cmd == "search" && argc > 2) {
+      for (const auto& r : searchSeries(argv[2], *key)) {
         std::cout << r.id << "\t" << r.frequency << "\t" << r.unit << "\t" << r.title << "\n";
       }
       return 0;
     }
 
     const std::string id = argc > 1 ? argv[1] : "UNRATE";
-    const Series s = fetchSeries(id, key);
+    const Series s = fetchSeries(id, *key);
     std::cout << s.meta.title << "  (" << s.meta.id << ", " << s.meta.frequency
               << ", " << s.meta.unit << ")\n";
     if (const auto* o = s.latest()) {
