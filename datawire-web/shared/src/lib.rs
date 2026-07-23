@@ -25,3 +25,9 @@ pub struct Series {
     pub meta: SeriesMeta,
     pub observations: Vec<Observation>,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WatchItem {
+    pub group: String,
+    pub id: String,
+}

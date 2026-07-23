@@ -7,6 +7,7 @@ edition = "2024"
 eframe = "0.35.0"
 egui_plot = "0.36.0"
 ehttp = "0.5"
+serde = "1"
 serde_json = "1"
 datawire-shared = { path = "../shared" }
 

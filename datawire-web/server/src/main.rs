@@ -4,7 +4,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use datawire_shared::{Observation, Series, SeriesMeta};
+use datawire_shared::{Observation, Series, SeriesMeta, WatchItem};
 use std::sync::Arc;
 use tower_http::services::ServeDir;
 
@@ -12,6 +12,7 @@ use tower_http::services::ServeDir;
 struct AppState {
     key: Arc<String>,
     http: reqwest::Client,
+    watchlist: Arc<Vec<WatchItem>>,
 }
 
 #[tokio::main]
@@ -24,9 +25,16 @@ async fn main() {
         std::process::exit(1);
     });
 
+    // Reuse the same watchlist the C++ tool edits (shared contract, not an ABI).
+    let watchlist_path = std::env::var("DATAWIRE_WATCHLIST")
+        .unwrap_or_else(|_| format!("{}/../../datawire/watchlist.txt", env!("CARGO_MANIFEST_DIR")));
+    let watchlist = load_watchlist(&watchlist_path);
+    println!("watchlist: {} signals from {watchlist_path}", watchlist.len());
+
     let state = AppState {
         key: Arc::new(key),
         http: reqwest::Client::new(),
+        watchlist: Arc::new(watchlist),
     };
 
     // Resolve the WASM dir relative to this crate (not the invocation cwd), so
@@ -38,6 +46,7 @@ async fn main() {
     }
 
     let app = Router::new()
+        .route("/api/watchlist", get(watchlist_handler))
         .route("/api/series/:id", get(series_handler))
         .fallback_service(ServeDir::new(&dist))
         .with_state(state);
@@ -46,6 +55,38 @@ async fn main() {
     println!("datawire-server on http://{addr}  (serving {dist})");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+async fn watchlist_handler(State(st): State<AppState>) -> Json<Vec<WatchItem>> {
+    Json((*st.watchlist).clone())
+}
+
+// Watchlist file: "# Group" lines start a group; other non-blank lines are ids.
+fn load_watchlist(path: &str) -> Vec<WatchItem> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    let mut group = String::new();
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(g) = line.strip_prefix('#') {
+            group = g.trim().to_string();
+            continue;
+        }
+        let id = line.split_whitespace().next().unwrap_or("").to_string();
+        if !id.is_empty() {
+            out.push(WatchItem {
+                group: group.clone(),
+                id,
+            });
+        }
+    }
+    out
 }
 
 async fn series_handler(

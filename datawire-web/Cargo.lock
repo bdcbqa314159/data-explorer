@@ -791,6 +791,7 @@ dependencies = [
  "eframe",
  "egui_plot",
  "ehttp",
+ "serde",
  "serde_json",
  "wasm-bindgen-futures",
  "web-sys",
