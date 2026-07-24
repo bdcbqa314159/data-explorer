@@ -31,3 +31,17 @@ pub struct WatchItem {
     pub group: String,
     pub id: String,
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub id: String,
+    pub title: String,
+    pub unit: String,
+    pub frequency: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AddRequest {
+    pub id: String,
+    pub group: Option<String>,
+}

@@ -1,4 +1,4 @@
-use datawire_shared::{Observation, Series, WatchItem};
+use datawire_shared::{AddRequest, Observation, SearchResult, Series, WatchItem};
 use eframe::egui;
 use egui_plot::{HoverPosition, Line, Plot, PlotPoints};
 use std::collections::{HashMap, HashSet};
@@ -16,12 +16,23 @@ enum Window {
     Max,
 }
 
+enum SearchState {
+    Idle,
+    Loading,
+    Done(Result<Vec<SearchResult>, String>),
+}
+
+type Search = Arc<Mutex<SearchState>>;
+
 struct App {
     watchlist: Watchlist,
     cache: SeriesCache,
     pending: Arc<Mutex<HashSet<String>>>,
     selected: Option<String>,
     window: Window,
+    search_open: bool,
+    search_text: String,
+    search: Search,
     ctx: egui::Context,
 }
 
@@ -44,22 +55,52 @@ fn parse_json<T: serde::de::DeserializeOwned>(
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let ctx = cc.egui_ctx.clone();
-        let watchlist: Watchlist = Arc::new(Mutex::new(None));
-        let sink = watchlist.clone();
-        let ctx2 = ctx.clone();
-        ehttp::fetch(ehttp::Request::get("/api/watchlist"), move |result| {
-            *sink.lock().unwrap() = Some(parse_json::<Vec<WatchItem>>(result));
-            ctx2.request_repaint();
-        });
-        Self {
-            watchlist,
+        let app = Self {
+            watchlist: Arc::new(Mutex::new(None)),
             cache: Arc::new(Mutex::new(HashMap::new())),
             pending: Arc::new(Mutex::new(HashSet::new())),
             selected: None,
             window: Window::Y5,
-            ctx,
-        }
+            search_open: false,
+            search_text: String::new(),
+            search: Arc::new(Mutex::new(SearchState::Idle)),
+            ctx: cc.egui_ctx.clone(),
+        };
+        app.reload_watchlist();
+        app
+    }
+
+    fn reload_watchlist(&self) {
+        let (sink, ctx) = (self.watchlist.clone(), self.ctx.clone());
+        ehttp::fetch(ehttp::Request::get("/api/watchlist"), move |result| {
+            *sink.lock().unwrap() = Some(parse_json::<Vec<WatchItem>>(result));
+            ctx.request_repaint();
+        });
+    }
+
+    fn do_search(&self, query: &str) {
+        *self.search.lock().unwrap() = SearchState::Loading;
+        let (sink, ctx) = (self.search.clone(), self.ctx.clone());
+        let url = format!("/api/search?q={}", url_encode(query));
+        ehttp::fetch(ehttp::Request::get(url), move |result| {
+            *sink.lock().unwrap() = SearchState::Done(parse_json::<Vec<SearchResult>>(result));
+            ctx.request_repaint();
+        });
+    }
+
+    // POST the id; the server returns the updated watchlist, which we store.
+    fn add_signal(&self, id: &str) {
+        let body = match serde_json::to_vec(&AddRequest { id: id.to_string(), group: None }) {
+            Ok(b) => b,
+            Err(_) => return,
+        };
+        let mut req = ehttp::Request::post("/api/watchlist", body);
+        req.headers.insert("Content-Type", "application/json");
+        let (sink, ctx) = (self.watchlist.clone(), self.ctx.clone());
+        ehttp::fetch(req, move |result| {
+            *sink.lock().unwrap() = Some(parse_json::<Vec<WatchItem>>(result));
+            ctx.request_repaint();
+        });
     }
 
     // Kick off a fetch for `id` unless it's already loaded or in flight.
@@ -116,6 +157,18 @@ fn fmt_val(v: f64) -> String {
     } else {
         format!("{v:.2}")
     }
+}
+
+fn url_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 // "YYYY-MM-DD" minus `years` -> cutoff date string (same suffix).
@@ -220,7 +273,14 @@ impl eframe::App for App {
             .resizable(true)
             .default_size(260.0)
             .show(ui, |ui| {
-                ui.heading("datawire");
+                ui.horizontal(|ui| {
+                    ui.heading("datawire");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("＋ Add").clicked() {
+                            self.search_open = true;
+                        }
+                    });
+                });
                 ui.separator();
                 let wl = self.watchlist.lock().unwrap();
                 match &*wl {
@@ -294,6 +354,64 @@ impl eframe::App for App {
         });
         if let Some(w) = new_window {
             self.window = w;
+        }
+
+        // Floating "Add signal" search window.
+        let mut open = self.search_open;
+        let mut run_search: Option<String> = None;
+        let mut add_id: Option<String> = None;
+        egui::Window::new("Add signal")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(440.0)
+            .show(ui.ctx(), |ui| {
+                ui.horizontal(|ui| {
+                    let resp = ui.text_edit_singleline(&mut self.search_text);
+                    let entered =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.button("Search").clicked() || entered) && !self.search_text.trim().is_empty()
+                    {
+                        run_search = Some(self.search_text.trim().to_string());
+                    }
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                    match &*self.search.lock().unwrap() {
+                        SearchState::Idle => {
+                            ui.weak("Search FRED (e.g. \"mortgage rate\") and add to your board.");
+                        }
+                        SearchState::Loading => {
+                            ui.weak("Searching…");
+                        }
+                        SearchState::Done(Err(e)) => {
+                            ui.colored_label(egui::Color32::RED, format!("Error: {e}"));
+                        }
+                        SearchState::Done(Ok(rs)) if rs.is_empty() => {
+                            ui.weak("No results.");
+                        }
+                        SearchState::Done(Ok(rs)) => {
+                            for r in rs {
+                                ui.horizontal(|ui| {
+                                    if ui.button("＋").clicked() {
+                                        add_id = Some(r.id.clone());
+                                    }
+                                    ui.monospace(&r.id);
+                                    ui.weak(format!("{} · {}", r.frequency, r.unit));
+                                });
+                                ui.label(&r.title);
+                                ui.add_space(4.0);
+                            }
+                        }
+                    }
+                });
+            });
+        self.search_open = open;
+        if let Some(q) = run_search {
+            self.do_search(&q);
+        }
+        if let Some(id) = add_id {
+            self.add_signal(&id);
+            self.ensure_series(&id); // start loading its data for the row/chart
         }
     }
 }
