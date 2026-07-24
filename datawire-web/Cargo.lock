@@ -818,6 +818,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "datawire-desktop"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "datawire-client",
+ "datawire-server",
+ "eframe",
+ "tokio",
+]
+
+[[package]]
 name = "datawire-server"
 version = "0.1.0"
 dependencies = [

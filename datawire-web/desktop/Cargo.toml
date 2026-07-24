@@ -1,0 +1,11 @@
+[package]
+name = "datawire-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+datawire-server = { path = "../server" }
+datawire-client = { path = "../client" }
+eframe = "0.35"
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
