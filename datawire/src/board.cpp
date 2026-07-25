@@ -117,33 +117,104 @@ Element windowTabs(Window w) {
                tab(" MAX ", Window::MAX)});
 }
 
-Element chartElement(const std::vector<Observation>& obs) {
-  if (obs.empty()) return text("(no data in window)") | dim | center;
+// Render the series into a braille dot grid (2 x-dots x 4 y-dots per cell), one
+// UTF-8 braille char per cell, connecting consecutive samples vertically.
+std::vector<std::string> brailleRows(const std::vector<Observation>& obs, int cols, int rows,
+                                     double mn, double mx) {
+  const int DX = cols * 2, DY = rows * 4;
+  std::vector<unsigned char> grid(static_cast<size_t>(cols) * rows, 0);
+  static const int dotbit[4][2] = {{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}};
+  auto setDot = [&](int dx, int dy) {
+    if (dx < 0 || dx >= DX || dy < 0 || dy >= DY) return;
+    grid[static_cast<size_t>(dy / 4) * cols + dx / 2] |= dotbit[dy % 4][dx % 2];
+  };
+
+  const int n = static_cast<int>(obs.size());
+  const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
+  int prevDy = -1;
+  for (int dx = 0; dx < DX; ++dx) {
+    const double frac = (n <= 1) ? 0.0 : static_cast<double>(dx) / (DX - 1) * (n - 1);
+    const int i0 = static_cast<int>(frac);
+    const int i1 = std::min(i0 + 1, n - 1);
+    const double t = frac - i0;
+    const double val = obs[i0].value * (1 - t) + obs[i1].value * t;
+    int dy = static_cast<int>(std::lround((1.0 - (val - mn) / range) * (DY - 1)));
+    dy = std::clamp(dy, 0, DY - 1);
+    if (prevDy >= 0) {
+      for (int y = std::min(prevDy, dy); y <= std::max(prevDy, dy); ++y) setDot(dx, y);
+    } else {
+      setDot(dx, dy);
+    }
+    prevDy = dy;
+  }
+
+  std::vector<std::string> out(rows);
+  for (int r = 0; r < rows; ++r) {
+    std::string line;
+    line.reserve(static_cast<size_t>(cols) * 3);
+    for (int c = 0; c < cols; ++c) {
+      const unsigned int cp = 0x2800u + grid[static_cast<size_t>(r) * cols + c];
+      line.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+    out[r] = std::move(line);
+  }
+  return out;
+}
+
+Element brailleChart(const std::vector<Observation>& obs, int cols, int rows, int cursor) {
+  if (obs.empty() || cols < 4 || rows < 2) return text("(no data in window)") | dim | center;
   double mn = obs.front().value, mx = obs.front().value;
   for (const auto& o : obs) {
     mn = std::min(mn, o.value);
     mx = std::max(mx, o.value);
   }
-  return graph([obs, mn, mx](int w, int h) -> std::vector<int> {
-    std::vector<int> out(std::max(0, w), 0);
-    if (w <= 0 || h <= 0 || obs.empty()) return out;
-    const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
-    const int n = static_cast<int>(obs.size());
-    for (int x = 0; x < w; ++x) {
-      const int idx = (n <= 1) ? 0 : (w <= 1 ? n - 1 : static_cast<int>(static_cast<long long>(x) * (n - 1) / (w - 1)));
-      const int y = static_cast<int>(std::lround((obs[idx].value - mn) / range * (h - 1)));
-      out[x] = std::clamp(y, 0, h - 1);
-    }
-    return out;
-  });
+  const auto lines = brailleRows(obs, cols, rows, mn, mx);
+
+  const int gw = 9;  // y-axis gutter width
+  Elements out;
+  for (int r = 0; r < rows; ++r) {
+    std::string gutter(gw, ' ');
+    if (r == 0) gutter = padLeft(formatValue(mx), gw - 1) + " ";
+    else if (r == rows - 1) gutter = padLeft(formatValue(mn), gw - 1) + " ";
+    out.push_back(hbox({text(gutter) | dim, text(lines[r]) | color(Color::Cyan)}));
+  }
+
+  // Crosshair caret at the cursor's x, then a start..end date axis.
+  const int n = static_cast<int>(obs.size());
+  int caretCol =
+      (n <= 1) ? 0 : static_cast<int>(std::lround(static_cast<double>(cursor) / (n - 1) * (cols - 1)));
+  caretCol = std::clamp(caretCol, 0, cols - 1);
+  std::string caret(cols, ' ');
+  caret[caretCol] = '^';
+  out.push_back(hbox({text(std::string(gw, ' ')), text(caret) | color(Color::Yellow)}));
+
+  std::string xl(cols, ' ');
+  const std::string& sd = obs.front().date;
+  const std::string& ed = obs.back().date;
+  for (size_t i = 0; i < sd.size() && i < xl.size(); ++i) xl[i] = sd[i];
+  for (size_t i = 0; i < ed.size(); ++i) {
+    const int p = cols - static_cast<int>(ed.size()) + static_cast<int>(i);
+    if (p >= 0 && p < cols) xl[p] = ed[i];
+  }
+  out.push_back(hbox({text(std::string(gw, ' ')), text(xl) | dim}));
+  return vbox(std::move(out));
 }
 
-Element recentObs(const std::vector<Observation>& obs) {
-  Elements rows{text("RECENT") | dim};
-  int cnt = 0;
-  for (auto it = obs.rbegin(); it != obs.rend() && cnt < 8; ++it, ++cnt)
-    rows.push_back(hbox({text(it->date), text("   "), text(padLeft(formatValue(it->value), 10))}));
-  return vbox(std::move(rows));
+// The crosshair value readout: date + value at the cursor, plus the latest.
+Element readout(const std::vector<Observation>& obs, int cursor, const SeriesMeta& m) {
+  if (obs.empty()) return text("");
+  const int c = std::clamp(cursor, 0, static_cast<int>(obs.size()) - 1);
+  const auto& cur = obs[c];
+  const auto& last = obs.back();
+  const std::string unit = m.unit.empty() ? "" : (" " + m.unit);
+  return hbox({
+      text("▸ ") | color(Color::Yellow),
+      text(cur.date + "  ") | color(Color::Yellow),
+      text(formatValue(cur.value) + unit) | bold | color(Color::Yellow),
+      text("      latest " + last.date + "  " + formatValue(last.value)) | dim,
+  });
 }
 
 // Deep-link to the FRED graph tool, carrying the window via cosd so the page
@@ -158,13 +229,13 @@ std::string openUrl(const BoardSignal& s, Window win) {
   return url;
 }
 
-Element detailPane(const BoardSignal& s, Window win) {
+Element detailPane(const BoardSignal& s, Window win, const std::vector<Observation>& wobs,
+                   int cols, int rows, int cursor) {
   const auto& m = s.series.meta;
   if (s.failed) {
     return vbox({text(s.id) | bold, separator(),
                  text("Data unavailable — press o to open on FRED") | dim});
   }
-  const auto wobs = windowFilter(s.series.observations, yearsOf(win));
 
   std::string meta = m.frequency;
   if (!m.unit.empty()) meta += " · " + m.unit;
@@ -176,9 +247,9 @@ Element detailPane(const BoardSignal& s, Window win) {
             text("   " + meta) | dim}),
       windowTabs(win),
       separator(),
-      chartElement(wobs) | flex,
+      brailleChart(wobs, cols, rows, cursor),
       separator(),
-      recentObs(wobs),
+      readout(wobs, cursor, m),
       text(openUrl(s, win)) | dim,
   });
 }
@@ -233,6 +304,8 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   int selected = 0;
   const int n = static_cast<int>(signals.size());
   Window win = Window::Y1;
+  int cursor = 0;
+  bool resetCursor = true;  // snap the crosshair to the latest point on load/switch
 
   auto component = Renderer([&] {
     Elements left;
@@ -245,11 +318,23 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       left.push_back(signalRow(signals[i], i == selected));
     }
     Element leftPane = vbox(std::move(left)) | vscroll_indicator | yframe;
-    Element detail = detailPane(signals[selected], win);
+
+    const auto& sig = signals[selected];
+    const auto wobs =
+        sig.failed ? std::vector<Observation>{} : windowFilter(sig.series.observations, yearsOf(win));
+    if (resetCursor) {
+      cursor = wobs.empty() ? 0 : static_cast<int>(wobs.size()) - 1;
+      resetCursor = false;
+    }
+    if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
+    const int cols = std::max(16, screen.dimx() - 52);
+    const int rows = std::max(3, screen.dimy() - 14);
+    Element detail = detailPane(sig, win, wobs, cols, rows, cursor);
 
     Element header = hbox({text(" datawire ") | bold | inverted,
                            text("  " + std::to_string(n) + " signals") | dim});
-    Element footer = text(" j/k select · w window · o open source · q quit ") | dim;
+    Element footer =
+        text(" j/k signal · h/l cursor · w window · o open · q quit ") | dim;
 
     return vbox({header, separator(),
                  hbox({leftPane | size(WIDTH, EQUAL, 40), separator(), detail | flex}) | flex,
@@ -259,9 +344,19 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
 
   component |= CatchEvent([&](Event e) {
     if (e == Event::Character('q') || e == Event::Escape) { screen.Exit(); return true; }
-    if (e == Event::Character('j') || e == Event::ArrowDown) { if (selected < n - 1) ++selected; return true; }
-    if (e == Event::Character('k') || e == Event::ArrowUp) { if (selected > 0) --selected; return true; }
-    if (e == Event::Character('w')) { win = nextWindow(win); return true; }
+    if (e == Event::Character('j') || e == Event::ArrowDown) {
+      if (selected < n - 1) ++selected;
+      resetCursor = true;
+      return true;
+    }
+    if (e == Event::Character('k') || e == Event::ArrowUp) {
+      if (selected > 0) --selected;
+      resetCursor = true;
+      return true;
+    }
+    if (e == Event::Character('w')) { win = nextWindow(win); resetCursor = true; return true; }
+    if (e == Event::Character('h') || e == Event::ArrowLeft) { --cursor; return true; }
+    if (e == Event::Character('l') || e == Event::ArrowRight) { ++cursor; return true; }
     if (e == Event::Character('o')) {
       openInBrowser(openUrl(signals[selected], win));
       return true;
