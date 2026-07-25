@@ -6,17 +6,21 @@
 #include "window.hpp"
 
 #include <ftxui/component/component.hpp>
+#include <ftxui/component/component_options.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <iterator>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,6 +79,41 @@ std::vector<std::pair<std::string, std::string>> loadWatchlist(const std::string
     out.emplace_back(group, line.substr(0, e));
   }
   return out;
+}
+
+// Append `id` under `group`, skipping duplicates and rejecting anything that
+// isn't a FRED-shaped id. Mirrors the web server's add logic.
+void addToWatchlist(const std::string& path, const std::string& id, const std::string& group) {
+  if (id.empty()) return;
+  for (unsigned char c : id)
+    if (!std::isalnum(c) && c != '.' && c != '_' && c != '-') return;
+
+  std::ifstream in(path, std::ios::binary);
+  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  in.close();
+
+  std::string lastGroup;
+  {
+    std::istringstream iss(content);
+    std::string line;
+    while (std::getline(iss, line)) {
+      const auto a = line.find_first_not_of(" \t\r");
+      if (a == std::string::npos) continue;
+      const auto b = line.find_last_not_of(" \t\r");
+      const std::string t = line.substr(a, b - a + 1);
+      if (t == id) return;  // already present
+      if (t[0] == '#') {
+        const auto g = t.find_first_not_of(" \t", 1);
+        lastGroup = (g == std::string::npos) ? "" : t.substr(g);
+      }
+    }
+  }
+
+  std::ofstream out(path, std::ios::app);
+  if (!out) return;
+  if (!content.empty() && content.back() != '\n') out << "\n";
+  if (lastGroup != group) out << "# " << group << "\n";
+  out << id << "\n";
 }
 
 std::pair<std::string, Color> deltaOf(const Series& s) {
@@ -302,12 +341,92 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
 
   auto screen = ScreenInteractive::Fullscreen();
   int selected = 0;
-  const int n = static_cast<int>(signals.size());
   Window win = Window::Y1;
   int cursor = 0;
   bool resetCursor = true;  // snap the crosshair to the latest point on load/switch
 
+  // --- in-TUI search + add -------------------------------------------------
+  std::string query;
+  std::vector<SearchResult> results;
+  int resultSel = 0;
+  std::string searchStatus;
+  bool searchMode = false;
+
+  auto runSearch = [&] {
+    if (query.find_first_not_of(" \t") == std::string::npos) return;
+    searchStatus = "Searching…";
+    try {
+      results = searchSeries(query, apiKey);  // ponytail: blocking; async later
+      resultSel = 0;
+      searchStatus = results.empty() ? "No results." : "";
+    } catch (const std::exception& ex) {
+      results.clear();
+      searchStatus = std::string("Error: ") + ex.what();
+    }
+  };
+  auto addSelected = [&] {
+    if (resultSel < 0 || resultSel >= static_cast<int>(results.size())) return;
+    const std::string id = results[resultSel].id;
+    addToWatchlist(watchlistPath, id, "Added");
+    BoardSignal bs;
+    bs.group = "Added";
+    bs.id = id;
+    try {
+      bs.series = fetchSeries(id, apiKey);
+    } catch (const std::exception&) {
+      bs.failed = true;
+    }
+    signals.push_back(std::move(bs));
+    selected = static_cast<int>(signals.size()) - 1;
+    resetCursor = true;
+    searchMode = false;
+  };
+
+  InputOption inputOpt;
+  inputOpt.multiline = false;
+  inputOpt.on_enter = [&] { runSearch(); };
+  Component searchInput = Input(&query, "Search FRED (e.g. mortgage rate)", inputOpt);
+
+  Component modal = Renderer(searchInput, [&] {
+    Elements list;
+    if (!searchStatus.empty()) {
+      list.push_back(text(searchStatus) | dim);
+    } else if (results.empty()) {
+      list.push_back(text("Type a query and press ↵") | dim);
+    } else {
+      int i = 0;
+      for (const auto& r : results) {
+        Element line = hbox({text(padRight(r.id, 13)),
+                             text(r.frequency + "·" + r.unit + "  ") | dim, text(r.title)});
+        if (i == resultSel) line = line | inverted | focus;
+        list.push_back(line);
+        ++i;
+      }
+    }
+    return vbox({
+               text("Add signal") | bold,
+               separator(),
+               hbox({text("⌕ "), searchInput->Render()}),
+               separator(),
+               vbox(std::move(list)) | vscroll_indicator | yframe | flex,
+               separator(),
+               text("↵ search · ↑↓ pick · ⇥ add · esc close") | dim,
+           }) |
+           border | size(WIDTH, EQUAL, 74) | size(HEIGHT, EQUAL, 24);
+  });
+  modal |= CatchEvent([&](Event e) {
+    if (e == Event::Escape) { searchMode = false; return true; }
+    if (e == Event::Tab) { addSelected(); return true; }
+    if (e == Event::ArrowUp) { if (resultSel > 0) --resultSel; return true; }
+    if (e == Event::ArrowDown) {
+      if (resultSel + 1 < static_cast<int>(results.size())) ++resultSel;
+      return true;
+    }
+    return false;
+  });
+
   auto component = Renderer([&] {
+    const int n = static_cast<int>(signals.size());
     Elements left;
     std::string cur = "\x01";  // sentinel so the first real group prints
     for (int i = 0; i < n; ++i) {
@@ -334,7 +453,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     Element header = hbox({text(" datawire ") | bold | inverted,
                            text("  " + std::to_string(n) + " signals") | dim});
     Element footer =
-        text(" j/k signal · h/l cursor · w window · o open · q quit ") | dim;
+        text(" j/k signal · h/l cursor · w window · / add · o open · q quit ") | dim;
 
     return vbox({header, separator(),
                  hbox({leftPane | size(WIDTH, EQUAL, 40), separator(), detail | flex}) | flex,
@@ -343,7 +462,16 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   });
 
   component |= CatchEvent([&](Event e) {
+    const int n = static_cast<int>(signals.size());
     if (e == Event::Character('q') || e == Event::Escape) { screen.Exit(); return true; }
+    if (e == Event::Character('/') || e == Event::Character('a')) {
+      searchMode = true;
+      query.clear();
+      results.clear();
+      searchStatus.clear();
+      resultSel = 0;
+      return true;
+    }
     if (e == Event::Character('j') || e == Event::ArrowDown) {
       if (selected < n - 1) ++selected;
       resetCursor = true;
@@ -364,6 +492,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     return false;
   });
 
+  component |= Modal(modal, &searchMode);
   screen.Loop(component);
   return 0;
 }
