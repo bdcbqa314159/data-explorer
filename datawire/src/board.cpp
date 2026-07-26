@@ -9,6 +9,7 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -434,8 +435,11 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       resetCursor = false;
     }
     if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
-    const int cols = std::max(16, screen.dimx() - 52);
-    const int rows = std::max(3, screen.dimy() - 14);
+    // Terminal::Size() is valid from the first frame; screen.dimx()/dimy() are 0
+    // until the first draw, which made the chart tiny on launch.
+    const auto term = Terminal::Size();
+    const int cols = std::max(16, term.dimx - 52);
+    const int rows = std::max(3, term.dimy - 14);
     Element detail = detailPane(sig, win, wobs, cols, rows, cursor);
 
     Element header = hbox({text(" datawire ") | bold | inverted,
