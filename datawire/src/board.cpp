@@ -20,6 +20,7 @@
 #include <future>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -31,11 +32,13 @@ using namespace ftxui;
 
 namespace {
 
+enum class Status { Loading, Loaded, Failed };
+
 struct BoardSignal {
   std::string group;
   std::string id;
   Series series;
-  bool failed = false;
+  Status status = Status::Loading;
 };
 
 enum class Window { Y1, Y5, MAX };
@@ -132,7 +135,7 @@ Element signalRow(const BoardSignal& s, bool selected) {
 
   std::string valStr;
   Element delta = text("      ");
-  if (s.failed) {
+  if (s.status == Status::Failed) {
     valStr = "   —  ";
   } else if (const auto* o = s.series.latest()) {
     valStr = padLeft(formatValue(o->value), 8);
@@ -225,7 +228,10 @@ std::string openUrl(const BoardSignal& s, Window win) {
 Element detailPane(const BoardSignal& s, Window win, const std::vector<Observation>& wobs,
                    int cursor) {
   const auto& m = s.series.meta;
-  if (s.failed) {
+  if (s.status == Status::Loading) {
+    return vbox({text(s.id) | bold, separator(), text("Loading…") | dim});
+  }
+  if (s.status == Status::Failed) {
     return vbox({text(s.id) | bold, separator(),
                  text("Data unavailable — press o to open on FRED") | dim});
   }
@@ -272,28 +278,53 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     return 1;
   }
 
-  // Fetch every series in parallel before the UI opens.
-  std::cerr << "Loading " << items.size() << " signals…\n";
-  std::vector<std::future<Series>> futs;
-  futs.reserve(items.size());
-  for (const auto& it : items)
-    futs.push_back(std::async(std::launch::async, [id = it.second, &apiKey] {
-      return fetchSeries(id, apiKey);
-    }));
-
-  std::vector<BoardSignal> signals(items.size());
-  for (size_t i = 0; i < items.size(); ++i) {
-    signals[i].group = items[i].first;
-    signals[i].id = items[i].second;
-    try {
-      signals[i].series = futs[i].get();
-    } catch (const std::exception& e) {
-      signals[i].failed = true;
-      std::cerr << "[warn] " << items[i].second << ": " << e.what() << "\n";
-    }
+  // `signals` is written by background fetch threads and read by the UI thread,
+  // so it (and the search state) live behind `mu`. UI-only state (selection,
+  // window, cursor, query…) stays on the UI thread and needs no lock.
+  std::mutex mu;
+  std::vector<BoardSignal> signals;
+  signals.reserve(items.size());
+  for (const auto& it : items) {
+    BoardSignal bs;
+    bs.group = it.first;
+    bs.id = it.second;
+    signals.push_back(std::move(bs));  // status defaults to Loading
   }
 
   auto screen = ScreenInteractive::Fullscreen();
+  // Declared after `screen` so the futures join (workers finish) while `screen`
+  // and `signals` are still alive.
+  std::vector<std::future<void>> tasks;
+
+  // Worker body: fetch one series and store the result under the lock.
+  auto fetchInto = [&](int idx) {
+    std::string id;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      id = signals[idx].id;
+    }
+    try {
+      Series s = fetchSeries(id, apiKey);
+      std::lock_guard<std::mutex> lk(mu);
+      signals[idx].series = std::move(s);
+      signals[idx].status = Status::Loaded;
+    } catch (const std::exception&) {
+      std::lock_guard<std::mutex> lk(mu);
+      signals[idx].status = Status::Failed;
+    }
+    screen.PostEvent(Event::Custom);  // ask the UI thread to redraw
+  };
+  auto refreshAll = [&] {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      for (auto& s : signals) s.status = Status::Loading;
+    }
+    const int m = static_cast<int>(signals.size());
+    for (int i = 0; i < m; ++i)
+      tasks.push_back(std::async(std::launch::async, [&, i] { fetchInto(i); }));
+  };
+  refreshAll();  // initial load — async, so the board opens immediately
+
   int selected = 0;
   Window win = Window::Y1;
   int cursor = 0;
@@ -308,32 +339,54 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
 
   auto runSearch = [&] {
     if (query.find_first_not_of(" \t") == std::string::npos) return;
-    searchStatus = "Searching…";
-    try {
-      results = searchSeries(query, apiKey);  // ponytail: blocking; async later
-      resultSel = 0;
-      searchStatus = results.empty() ? "No results." : "";
-    } catch (const std::exception& ex) {
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      searchStatus = "Searching…";
       results.clear();
-      searchStatus = std::string("Error: ") + ex.what();
     }
+    resultSel = 0;
+    tasks.push_back(std::async(std::launch::async, [&, q = query] {
+      try {
+        auto rs = searchSeries(q, apiKey);
+        std::lock_guard<std::mutex> lk(mu);
+        results = std::move(rs);
+        searchStatus = results.empty() ? "No results." : "";
+      } catch (const std::exception& ex) {
+        std::lock_guard<std::mutex> lk(mu);
+        results.clear();
+        searchStatus = std::string("Error: ") + ex.what();
+      }
+      screen.PostEvent(Event::Custom);
+    }));
   };
   auto addSelected = [&] {
-    if (resultSel < 0 || resultSel >= static_cast<int>(results.size())) return;
-    const std::string id = results[resultSel].id;
-    addToWatchlist(watchlistPath, id, "Added");
-    BoardSignal bs;
-    bs.group = "Added";
-    bs.id = id;
-    try {
-      bs.series = fetchSeries(id, apiKey);
-    } catch (const std::exception&) {
-      bs.failed = true;
+    std::string id;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      if (resultSel < 0 || resultSel >= static_cast<int>(results.size())) return;
+      id = results[resultSel].id;
     }
-    signals.push_back(std::move(bs));
-    selected = static_cast<int>(signals.size()) - 1;
+    addToWatchlist(watchlistPath, id, "Added");
+    int idx = -1;
+    bool needFetch = false;
+    {
+      std::lock_guard<std::mutex> lk(mu);
+      for (int i = 0; i < static_cast<int>(signals.size()); ++i)
+        if (signals[i].id == id) { idx = i; break; }
+      if (idx < 0) {
+        BoardSignal bs;
+        bs.group = "Added";
+        bs.id = id;
+        signals.push_back(std::move(bs));
+        idx = static_cast<int>(signals.size()) - 1;
+        needFetch = true;
+      }
+    }
+    selected = idx;
     resetCursor = true;
     searchMode = false;
+    if (needFetch)
+      tasks.push_back(std::async(std::launch::async, [&, idx] { fetchInto(idx); }));
   };
 
   // Search modal as a plain Element (own text field + result list), overlaid on
@@ -369,10 +422,16 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   };
 
   auto component = Renderer([&] {
+    std::lock_guard<std::mutex> lk(mu);  // signals/results read under the lock
     const int n = static_cast<int>(signals.size());
+    if (selected >= n) selected = n - 1;
+    if (selected < 0) selected = 0;
+
     Elements left;
+    int loaded = 0;
     std::string cur = "\x01";  // sentinel so the first real group prints
     for (int i = 0; i < n; ++i) {
+      if (signals[i].status == Status::Loaded) ++loaded;
       if (signals[i].group != cur) {
         cur = signals[i].group;
         if (!cur.empty()) left.push_back(text(" " + cur) | bold | dim);
@@ -382,8 +441,9 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     Element leftPane = vbox(std::move(left)) | vscroll_indicator | yframe;
 
     const auto& sig = signals[selected];
-    const auto wobs =
-        sig.failed ? std::vector<Observation>{} : windowFilter(sig.series.observations, yearsOf(win));
+    const auto wobs = sig.status == Status::Loaded
+                          ? windowFilter(sig.series.observations, yearsOf(win))
+                          : std::vector<Observation>{};
     if (resetCursor) {
       cursor = wobs.empty() ? 0 : static_cast<int>(wobs.size()) - 1;
       resetCursor = false;
@@ -391,10 +451,12 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
     Element detail = detailPane(sig, win, wobs, cursor);
 
-    Element header = hbox({text(" datawire ") | bold | inverted,
-                           text("  " + std::to_string(n) + " signals") | dim});
+    const std::string status = loaded < n
+                                   ? "  loading " + std::to_string(loaded) + "/" + std::to_string(n)
+                                   : "  " + std::to_string(n) + " signals";
+    Element header = hbox({text(" datawire ") | bold | inverted, text(status) | dim});
     Element footer =
-        text(" j/k signal · h/l cursor · w window · / add · o open · q quit ") | dim;
+        text(" j/k signal · h/l cursor · w window · / add · r refresh · o open · q quit ") | dim;
 
     Element boardEl = vbox({header, separator(),
                             hbox({leftPane | size(WIDTH, EQUAL, 40), separator(), detail | flex}) | flex,
@@ -413,6 +475,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       if (e == Event::Tab) { addSelected(); return true; }
       if (e == Event::ArrowUp) { if (resultSel > 0) --resultSel; return true; }
       if (e == Event::ArrowDown) {
+        std::lock_guard<std::mutex> lk(mu);
         if (resultSel + 1 < static_cast<int>(results.size())) ++resultSel;
         return true;
       }
@@ -440,10 +503,17 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       return true;
     }
     if (e == Event::Character('w')) { win = nextWindow(win); resetCursor = true; return true; }
+    if (e == Event::Character('r')) { refreshAll(); return true; }
     if (e == Event::Character('h') || e == Event::ArrowLeft) { --cursor; return true; }
     if (e == Event::Character('l') || e == Event::ArrowRight) { ++cursor; return true; }
     if (e == Event::Character('o')) {
-      openInBrowser(openUrl(signals[selected], win));
+      std::string url;
+      {
+        std::lock_guard<std::mutex> lk(mu);
+        if (selected >= 0 && selected < static_cast<int>(signals.size()))
+          url = openUrl(signals[selected], win);
+      }
+      openInBrowser(url);
       return true;
     }
     return false;
