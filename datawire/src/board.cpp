@@ -6,7 +6,6 @@
 #include "window.hpp"
 
 #include <ftxui/component/component.hpp>
-#include <ftxui/component/component_options.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
@@ -382,12 +381,10 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     searchMode = false;
   };
 
-  InputOption inputOpt;
-  inputOpt.multiline = false;
-  inputOpt.on_enter = [&] { runSearch(); };
-  Component searchInput = Input(&query, "Search FRED (e.g. mortgage rate)", inputOpt);
-
-  Component modal = Renderer(searchInput, [&] {
+  // Search modal as a plain Element (own text field + result list), overlaid on
+  // the board with dbox. Handled in the board's single event handler — no extra
+  // focusable component, so the board never loses keyboard events.
+  auto buildModal = [&]() -> Element {
     Elements list;
     if (!searchStatus.empty()) {
       list.push_back(text(searchStatus) | dim);
@@ -406,24 +403,15 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     return vbox({
                text("Add signal") | bold,
                separator(),
-               hbox({text("⌕ "), searchInput->Render()}),
+               text("⌕ " + query + "▏"),
                separator(),
                vbox(std::move(list)) | vscroll_indicator | yframe | flex,
                separator(),
                text("↵ search · ↑↓ pick · ⇥ add · esc close") | dim,
            }) |
-           border | size(WIDTH, EQUAL, 74) | size(HEIGHT, EQUAL, 24);
-  });
-  modal |= CatchEvent([&](Event e) {
-    if (e == Event::Escape) { searchMode = false; return true; }
-    if (e == Event::Tab) { addSelected(); return true; }
-    if (e == Event::ArrowUp) { if (resultSel > 0) --resultSel; return true; }
-    if (e == Event::ArrowDown) {
-      if (resultSel + 1 < static_cast<int>(results.size())) ++resultSel;
-      return true;
-    }
-    return false;
-  });
+           border | size(WIDTH, EQUAL, 74) | size(HEIGHT, EQUAL, 24) | bgcolor(Color::Black) |
+           clear_under;
+  };
 
   auto component = Renderer([&] {
     const int n = static_cast<int>(signals.size());
@@ -455,14 +443,30 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     Element footer =
         text(" j/k signal · h/l cursor · w window · / add · o open · q quit ") | dim;
 
-    return vbox({header, separator(),
-                 hbox({leftPane | size(WIDTH, EQUAL, 40), separator(), detail | flex}) | flex,
-                 separator(), footer}) |
-           border;
+    Element boardEl = vbox({header, separator(),
+                            hbox({leftPane | size(WIDTH, EQUAL, 40), separator(), detail | flex}) | flex,
+                            separator(), footer}) |
+                      border;
+    if (searchMode) return dbox({boardEl, buildModal() | center});
+    return boardEl;
   });
 
   component |= CatchEvent([&](Event e) {
     const int n = static_cast<int>(signals.size());
+    // Modal captures all keys while open (manual text field).
+    if (searchMode) {
+      if (e == Event::Escape) { searchMode = false; return true; }
+      if (e == Event::Return) { runSearch(); return true; }
+      if (e == Event::Tab) { addSelected(); return true; }
+      if (e == Event::ArrowUp) { if (resultSel > 0) --resultSel; return true; }
+      if (e == Event::ArrowDown) {
+        if (resultSel + 1 < static_cast<int>(results.size())) ++resultSel;
+        return true;
+      }
+      if (e == Event::Backspace) { if (!query.empty()) query.pop_back(); return true; }
+      if (e.is_character()) { query += e.character(); return true; }
+      return true;
+    }
     if (e == Event::Character('q') || e == Event::Escape) { screen.Exit(); return true; }
     if (e == Event::Character('/') || e == Event::Character('a')) {
       searchMode = true;
@@ -492,7 +496,6 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     return false;
   });
 
-  component |= Modal(modal, &searchMode);
   screen.Loop(component);
   return 0;
 }
