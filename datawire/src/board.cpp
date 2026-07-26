@@ -8,8 +8,8 @@
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
+#include <ftxui/dom/canvas.hpp>
 #include <ftxui/dom/elements.hpp>
-#include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -156,89 +156,43 @@ Element windowTabs(Window w) {
                tab(" MAX ", Window::MAX)});
 }
 
-// Render the series into a braille dot grid (2 x-dots x 4 y-dots per cell), one
-// UTF-8 braille char per cell, connecting consecutive samples vertically.
-std::vector<std::string> brailleRows(const std::vector<Observation>& obs, int cols, int rows,
-                                     double mn, double mx) {
-  const int DX = cols * 2, DY = rows * 4;
-  std::vector<unsigned char> grid(static_cast<size_t>(cols) * rows, 0);
-  static const int dotbit[4][2] = {{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}};
-  auto setDot = [&](int dx, int dy) {
-    if (dx < 0 || dx >= DX || dy < 0 || dy >= DY) return;
-    grid[static_cast<size_t>(dy / 4) * cols + dx / 2] |= dotbit[dy % 4][dx % 2];
-  };
-
-  const int n = static_cast<int>(obs.size());
-  const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
-  int prevDy = -1;
-  for (int dx = 0; dx < DX; ++dx) {
-    const double frac = (n <= 1) ? 0.0 : static_cast<double>(dx) / (DX - 1) * (n - 1);
-    const int i0 = static_cast<int>(frac);
-    const int i1 = std::min(i0 + 1, n - 1);
-    const double t = frac - i0;
-    const double val = obs[i0].value * (1 - t) + obs[i1].value * t;
-    int dy = static_cast<int>(std::lround((1.0 - (val - mn) / range) * (DY - 1)));
-    dy = std::clamp(dy, 0, DY - 1);
-    if (prevDy >= 0) {
-      for (int y = std::min(prevDy, dy); y <= std::max(prevDy, dy); ++y) setDot(dx, y);
-    } else {
-      setDot(dx, dy);
-    }
-    prevDy = dy;
-  }
-
-  std::vector<std::string> out(rows);
-  for (int r = 0; r < rows; ++r) {
-    std::string line;
-    line.reserve(static_cast<size_t>(cols) * 3);
-    for (int c = 0; c < cols; ++c) {
-      const unsigned int cp = 0x2800u + grid[static_cast<size_t>(r) * cols + c];
-      line.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-      line.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-      line.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-    }
-    out[r] = std::move(line);
-  }
-  return out;
-}
-
-Element brailleChart(const std::vector<Observation>& obs, int cols, int rows, int cursor) {
-  if (obs.empty() || cols < 4 || rows < 2) return text("(no data in window)") | dim | center;
+// Line chart via FTXUI Canvas: auto-sizes to the available box (no manual
+// dimensions), draws the series in cyan with a yellow vertical crosshair at the
+// cursor. Canvas uses braille internally (2x4 sub-cells) and supports per-point
+// colour, so the crosshair is a real coloured line.
+Element chartElement(const std::vector<Observation>& obs, int cursor) {
+  if (obs.empty()) return text("(no data in window)") | dim | center;
   double mn = obs.front().value, mx = obs.front().value;
   for (const auto& o : obs) {
     mn = std::min(mn, o.value);
     mx = std::max(mx, o.value);
   }
-  const auto lines = brailleRows(obs, cols, rows, mn, mx);
 
-  const int gw = 9;  // y-axis gutter width
-  Elements out;
-  for (int r = 0; r < rows; ++r) {
-    std::string gutter(gw, ' ');
-    if (r == 0) gutter = padLeft(formatValue(mx), gw - 1) + " ";
-    else if (r == rows - 1) gutter = padLeft(formatValue(mn), gw - 1) + " ";
-    out.push_back(hbox({text(gutter) | dim, text(lines[r]) | color(Color::Cyan)}));
-  }
+  auto draw = [obs, mn, mx, cursor](Canvas& c) {
+    const int W = c.width(), H = c.height();
+    if (W <= 0 || H <= 0 || obs.empty()) return;
+    const int n = static_cast<int>(obs.size());
+    const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
+    auto px = [&](int i) { return n <= 1 ? 0 : static_cast<int>(std::lround(static_cast<double>(i) / (n - 1) * (W - 1))); };
+    auto py = [&](double v) {
+      return std::clamp(static_cast<int>(std::lround((1.0 - (v - mn) / range) * (H - 1))), 0, H - 1);
+    };
+    for (int i = 0; i + 1 < n; ++i)
+      c.DrawPointLine(px(i), py(obs[i].value), px(i + 1), py(obs[i + 1].value), Color::Cyan);
+    const int cx = px(std::clamp(cursor, 0, n - 1));  // crosshair (drawn last, on top)
+    c.DrawPointLine(cx, 0, cx, H - 1, Color::Yellow);
+  };
 
-  // Crosshair caret at the cursor's x, then a start..end date axis.
-  const int n = static_cast<int>(obs.size());
-  int caretCol =
-      (n <= 1) ? 0 : static_cast<int>(std::lround(static_cast<double>(cursor) / (n - 1) * (cols - 1)));
-  caretCol = std::clamp(caretCol, 0, cols - 1);
-  std::string caret(cols, ' ');
-  caret[caretCol] = '^';
-  out.push_back(hbox({text(std::string(gw, ' ')), text(caret) | color(Color::Yellow)}));
-
-  std::string xl(cols, ' ');
-  const std::string& sd = obs.front().date;
-  const std::string& ed = obs.back().date;
-  for (size_t i = 0; i < sd.size() && i < xl.size(); ++i) xl[i] = sd[i];
-  for (size_t i = 0; i < ed.size(); ++i) {
-    const int p = cols - static_cast<int>(ed.size()) + static_cast<int>(i);
-    if (p >= 0 && p < cols) xl[p] = ed[i];
-  }
-  out.push_back(hbox({text(std::string(gw, ' ')), text(xl) | dim}));
-  return vbox(std::move(out));
+  // y gutter (max at top, min at bottom) + plot; date axis below.
+  Element plot = hbox({
+                     vbox({text(formatValue(mx)) | dim, filler(), text(formatValue(mn)) | dim}) |
+                         size(WIDTH, EQUAL, 9),
+                     canvas(draw) | flex,
+                 }) |
+                 flex;
+  Element axis = hbox({text(std::string(9, ' ')), text(obs.front().date) | dim, filler(),
+                       text(obs.back().date) | dim});
+  return vbox({plot, axis});
 }
 
 // The crosshair value readout: date + value at the cursor, plus the latest.
@@ -269,7 +223,7 @@ std::string openUrl(const BoardSignal& s, Window win) {
 }
 
 Element detailPane(const BoardSignal& s, Window win, const std::vector<Observation>& wobs,
-                   int cols, int rows, int cursor) {
+                   int cursor) {
   const auto& m = s.series.meta;
   if (s.failed) {
     return vbox({text(s.id) | bold, separator(),
@@ -286,7 +240,7 @@ Element detailPane(const BoardSignal& s, Window win, const std::vector<Observati
             text("   " + meta) | dim}),
       windowTabs(win),
       separator(),
-      brailleChart(wobs, cols, rows, cursor),
+      chartElement(wobs, cursor) | flex,
       separator(),
       readout(wobs, cursor, m),
       text(openUrl(s, win)) | dim,
@@ -435,12 +389,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       resetCursor = false;
     }
     if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
-    // Terminal::Size() is valid from the first frame; screen.dimx()/dimy() are 0
-    // until the first draw, which made the chart tiny on launch.
-    const auto term = Terminal::Size();
-    const int cols = std::max(16, term.dimx - 52);
-    const int rows = std::max(3, term.dimy - 14);
-    Element detail = detailPane(sig, win, wobs, cols, rows, cursor);
+    Element detail = detailPane(sig, win, wobs, cursor);
 
     Element header = hbox({text(" datawire ") | bold | inverted,
                            text("  " + std::to_string(n) + " signals") | dim});
