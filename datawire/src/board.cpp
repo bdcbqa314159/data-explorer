@@ -182,8 +182,18 @@ Element chartElement(const std::vector<Observation>& obs, int cursor) {
     };
     for (int i = 0; i + 1 < n; ++i)
       c.DrawPointLine(px(i), py(obs[i].value), px(i + 1), py(obs[i + 1].value), Color::Cyan);
-    const int cx = px(std::clamp(cursor, 0, n - 1));  // crosshair (drawn last, on top)
+
+    const int cx = px(std::clamp(cursor, 0, n - 1));  // crosshair
     c.DrawPointLine(cx, 0, cx, H - 1, Color::Yellow);
+
+    // Peak / trough markers (drawn last so they stay visible).
+    int iMax = 0, iMin = 0;
+    for (int i = 1; i < n; ++i) {
+      if (obs[i].value > obs[iMax].value) iMax = i;
+      if (obs[i].value < obs[iMin].value) iMin = i;
+    }
+    c.DrawPointCircle(px(iMax), py(obs[iMax].value), 1, Color::Green);
+    c.DrawPointCircle(px(iMin), py(obs[iMin].value), 1, Color::Red);
   };
 
   // y gutter (max at top, min at bottom) + plot; date axis below.
@@ -198,17 +208,33 @@ Element chartElement(const std::vector<Observation>& obs, int cursor) {
   return vbox({plot, axis});
 }
 
-// The crosshair value readout: date + value at the cursor, plus the latest.
+// The crosshair value readout: date + value at the cursor, the change from the
+// cursor to the latest point (Δ and %), and the latest value.
 Element readout(const std::vector<Observation>& obs, int cursor, const SeriesMeta& m) {
   if (obs.empty()) return text("");
   const int c = std::clamp(cursor, 0, static_cast<int>(obs.size()) - 1);
   const auto& cur = obs[c];
   const auto& last = obs.back();
   const std::string unit = m.unit.empty() ? "" : (" " + m.unit);
+
+  Element deltaEl = text("");
+  if (c != static_cast<int>(obs.size()) - 1) {  // cursor isn't already the latest
+    const double d = last.value - cur.value;
+    const double pct = cur.value != 0.0 ? d / cur.value * 100.0 : 0.0;
+    const char* arrow = d > 0 ? "▲" : d < 0 ? "▼" : "▬";
+    const Color col = d > 0 ? Color::Green : d < 0 ? Color::Red : Color::GrayLight;
+    char pbuf[16];
+    std::snprintf(pbuf, sizeof pbuf, "%+.1f%%", pct);
+    deltaEl = text("   " + std::string(arrow) + " " + formatValue(std::abs(d)) + " (" + pbuf +
+                   ") → latest") |
+              color(col);
+  }
+
   return hbox({
       text("▸ ") | color(Color::Yellow),
       text(cur.date + "  ") | color(Color::Yellow),
       text(formatValue(cur.value) + unit) | bold | color(Color::Yellow),
+      deltaEl,
       text("      latest " + last.date + "  " + formatValue(last.value)) | dim,
   });
 }
