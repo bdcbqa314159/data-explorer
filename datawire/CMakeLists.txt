@@ -50,21 +50,33 @@ FetchContent_Declare(ftxui
 
 FetchContent_MakeAvailable(curl nlohmann_json ftxui)
 
-# --- main binary ---------------------------------------------------------
-add_executable(datawire
-  src/main.cpp
-  src/board.cpp
+# --- datawire_core: the SDK (data layer, no UI) --------------------------
+# Everything a non-TUI client would need: model, source (FRED), store (cache),
+# analysis. The TUI links this; a future CLI or another frontend could too.
+add_library(datawire_core STATIC
   src/credentials.cpp
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp
+  src/fred_source.cpp
+  src/json_store.cpp
+  src/datawire.cpp
   src/window.cpp
   src/cache.cpp
 )
-target_include_directories(datawire PRIVATE src)
-target_link_libraries(datawire PRIVATE
+target_include_directories(datawire_core PUBLIC src)
+target_link_libraries(datawire_core PUBLIC
   CURL::libcurl
   nlohmann_json::nlohmann_json
+)
+
+# --- datawire: the terminal UI (thin client of datawire_core) ------------
+add_executable(datawire
+  src/main.cpp
+  src/board.cpp
+)
+target_link_libraries(datawire PRIVATE
+  datawire_core
   ftxui::component ftxui::dom ftxui::screen
 )
 
