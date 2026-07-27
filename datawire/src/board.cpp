@@ -1,8 +1,6 @@
 #include "board.hpp"
 
-#include "cache.hpp"
-#include "fred.hpp"
-#include "http_client.hpp"
+#include "datawire.hpp"
 #include "series.hpp"
 #include "window.hpp"
 
@@ -466,7 +464,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   // Declared after `screen` so the futures join (workers finish) while `screen`
   // and `signals` are still alive.
   std::vector<std::future<void>> tasks;
-  SeriesCache cache;
+  Datawire sdk = Datawire::fred(apiKey);  // FRED source + JSON store, behind the facade
   std::atomic<int> inflight{0};  // # of fetches running (drives the spinner/ticker)
 
   // Worker body: fetch one series, cache it, and store the result under the lock.
@@ -478,8 +476,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       id = signals[idx].id;
     }
     try {
-      Series s = fetchSeries(id, apiKey);
-      cache.put(id, s);
+      Series s = sdk.fetch(id);  // fetch + persist, via the facade
       std::lock_guard<std::mutex> lk(mu);
       signals[idx].series = std::move(s);
       signals[idx].status = Status::Loaded;
@@ -502,7 +499,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     const long long TTL = 6 * 3600;  // seconds
     const int m = static_cast<int>(signals.size());
     for (int i = 0; i < m; ++i) {
-      auto cached = cache.get(signals[i].id);
+      auto cached = sdk.cached(signals[i].id);
       bool stale = true;
       if (cached) {
         std::lock_guard<std::mutex> lk(mu);
@@ -542,7 +539,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     resultSel = 0;
     tasks.push_back(std::async(std::launch::async, [&, q = query] {
       try {
-        auto rs = searchSeries(q, apiKey);
+        auto rs = sdk.search(q);
         std::lock_guard<std::mutex> lk(mu);
         results = std::move(rs);
         searchStatus = results.empty() ? "No results." : "";
