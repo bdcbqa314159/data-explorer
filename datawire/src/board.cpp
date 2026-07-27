@@ -1,5 +1,6 @@
 #include "board.hpp"
 
+#include "cache.hpp"
 #include "fred.hpp"
 #include "http_client.hpp"
 #include "series.hpp"
@@ -14,7 +15,9 @@
 #include <ftxui/screen/box.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +27,7 @@
 #include <iterator>
 #include <mutex>
 #include <numeric>
+#include <thread>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -200,7 +204,7 @@ std::vector<int> displayOrder(const std::vector<BoardSignal>& sigs, bool movers)
   return order;
 }
 
-Element signalRow(const BoardSignal& s, bool selected) {
+Element signalRow(const BoardSignal& s, bool selected, const std::string& spinner) {
   std::string name = s.series.meta.title.empty() ? s.id : s.series.meta.title;
   if (name.size() > 18) name = name.substr(0, 17) + "…";
 
@@ -217,7 +221,7 @@ Element signalRow(const BoardSignal& s, bool selected) {
     auto [arrow, col] = deltaOf(s.series);
     delta = text(padLeft(arrow, 6)) | color(col);
   } else {
-    valStr = "   …  ";
+    valStr = "   " + spinner + "   ";  // loading (no data yet)
   }
 
   Element row = hbox({text(" "), text(padRight(name, 18)), text(" "), spark, text(" "),
@@ -462,9 +466,12 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   // Declared after `screen` so the futures join (workers finish) while `screen`
   // and `signals` are still alive.
   std::vector<std::future<void>> tasks;
+  SeriesCache cache;
+  std::atomic<int> inflight{0};  // # of fetches running (drives the spinner/ticker)
 
-  // Worker body: fetch one series and store the result under the lock.
+  // Worker body: fetch one series, cache it, and store the result under the lock.
   auto fetchInto = [&](int idx) {
+    ++inflight;
     std::string id;
     {
       std::lock_guard<std::mutex> lk(mu);
@@ -472,25 +479,41 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     }
     try {
       Series s = fetchSeries(id, apiKey);
+      cache.put(id, s);
       std::lock_guard<std::mutex> lk(mu);
       signals[idx].series = std::move(s);
       signals[idx].status = Status::Loaded;
     } catch (const std::exception&) {
       std::lock_guard<std::mutex> lk(mu);
-      signals[idx].status = Status::Failed;
+      if (signals[idx].status != Status::Loaded)
+        signals[idx].status = Status::Failed;  // keep cached data on a failed refresh
     }
+    --inflight;
     screen.PostEvent(Event::Custom);  // ask the UI thread to redraw
   };
-  auto refreshAll = [&] {
-    {
-      std::lock_guard<std::mutex> lk(mu);
-      for (auto& s : signals) s.status = Status::Loading;
-    }
+  auto refreshAll = [&] {  // force re-fetch all; current data stays visible meanwhile
     const int m = static_cast<int>(signals.size());
     for (int i = 0; i < m; ++i)
       tasks.push_back(std::async(std::launch::async, [&, i] { fetchInto(i); }));
   };
-  refreshAll();  // initial load — async, so the board opens immediately
+
+  // Initial load: show cached series instantly, only hit the network for stale ones.
+  {
+    const long long TTL = 6 * 3600;  // seconds
+    const int m = static_cast<int>(signals.size());
+    for (int i = 0; i < m; ++i) {
+      auto cached = cache.get(signals[i].id);
+      bool stale = true;
+      if (cached) {
+        std::lock_guard<std::mutex> lk(mu);
+        signals[i].series = std::move(cached->series);
+        signals[i].status = Status::Loaded;
+        stale = cached->ageSec > TTL;
+      }
+      if (stale)
+        tasks.push_back(std::async(std::launch::async, [&, i] { fetchInto(i); }));
+    }
+  }
 
   int selected = 0;
   Window win = Window::Y1;
@@ -625,16 +648,21 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
            border | size(WIDTH, EQUAL, 52) | bgcolor(Color::Black) | clear_under;
   };
 
+  const auto startTime = std::chrono::steady_clock::now();
+
   auto component = Renderer([&] {
     std::lock_guard<std::mutex> lk(mu);  // signals/results read under the lock
     const int n = static_cast<int>(signals.size());
     if (selected >= n) selected = n - 1;
     if (selected < 0) selected = 0;
 
+    static const char* SPIN[10] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - startTime)
+                        .count();
+    const std::string spinner = SPIN[(ms / 90) % 10];
+
     Elements left;
-    int loaded = 0;
-    for (const auto& s : signals)
-      if (s.status == Status::Loaded) ++loaded;
     const auto order = displayOrder(signals, moversMode);
     std::string cur = "\x01";  // sentinel so the first real group prints
     for (int oi = 0; oi < n; ++oi) {
@@ -643,7 +671,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
         cur = signals[i].group;
         if (!cur.empty()) left.push_back(text(" " + cur) | bold | dim);
       }
-      left.push_back(signalRow(signals[i], i == selected));
+      left.push_back(signalRow(signals[i], i == selected, spinner));
     }
     Element leftPane = vbox(std::move(left)) | vscroll_indicator | yframe;
 
@@ -663,9 +691,8 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     if (!wobs.empty()) cursor = std::clamp(cursor, 0, chartN - 1);
     Element detail = detailPane(sig, win, wobs, cursor, transform, chartBox);
 
-    std::string status = loaded < n
-                             ? "  loading " + std::to_string(loaded) + "/" + std::to_string(n)
-                             : "  " + std::to_string(n) + " signals";
+    std::string status = inflight.load() > 0 ? ("  " + spinner + " refreshing")
+                                             : ("  " + std::to_string(n) + " signals");
     if (moversMode) status += " · movers";
     Element header = hbox({text(" datawire ") | bold | inverted, text(status) | dim});
     Element footer = text(" j/k · h/l cursor · w window · t lens · m movers · / add · r refresh · "
@@ -759,7 +786,19 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     return false;
   });
 
+  // Animation clock: repaint at ~11fps ONLY while a fetch is in flight (drives
+  // the spinner smoothly); silent/event-driven when idle.
+  std::atomic<bool> tickerRunning{true};
+  std::thread ticker([&] {
+    while (tickerRunning.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(90));
+      if (inflight.load() > 0) screen.PostEvent(Event::Custom);
+    }
+  });
+
   screen.Loop(component);
+  tickerRunning.store(false);
+  ticker.join();
   return 0;
 }
 

@@ -59,6 +59,7 @@ add_executable(datawire
   src/fred_parse.cpp
   src/fred_fetch.cpp
   src/window.cpp
+  src/cache.cpp
 )
 target_include_directories(datawire PRIVATE src)
 target_link_libraries(datawire PRIVATE
