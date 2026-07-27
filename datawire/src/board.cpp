@@ -48,6 +48,25 @@ Window nextWindow(Window w) {
   return w == Window::Y1 ? Window::Y5 : w == Window::Y5 ? Window::MAX : Window::Y1;
 }
 
+// Opt-in analyst lens applied to the charted series.
+enum class Transform { None, YoY, Pct, MA };
+Transform nextTransform(Transform t) {
+  switch (t) {
+    case Transform::None: return Transform::YoY;
+    case Transform::YoY: return Transform::Pct;
+    case Transform::Pct: return Transform::MA;
+    default: return Transform::None;
+  }
+}
+const char* transformLabel(Transform t) {
+  switch (t) {
+    case Transform::YoY: return "YoY %";
+    case Transform::Pct: return "% chg";
+    case Transform::MA: return "1y MA";
+    default: return "";
+  }
+}
+
 std::string padRight(std::string s, size_t w) {
   if (s.size() > w) s.resize(w);
   else s.append(w - s.size(), ' ');
@@ -214,6 +233,62 @@ Element windowTabs(Window w) {
                tab(" MAX ", Window::MAX)});
 }
 
+int periodsPerYear(const std::string& freq) {
+  auto has = [&](const char* s) { return freq.find(s) != std::string::npos; };
+  if (has("Dai")) return 252;
+  if (has("Week")) return 52;
+  if (has("Month")) return 12;
+  if (has("Quart")) return 4;
+  if (has("Semi")) return 2;
+  if (has("Ann")) return 1;
+  return 12;
+}
+
+// "YYYY-..." one year earlier, for date-based YoY lookup.
+std::string decYear(const std::string& date) {
+  if (date.size() < 4) return date;
+  try {
+    return std::to_string(std::stoi(date.substr(0, 4)) - 1) + date.substr(4);
+  } catch (...) {
+    return date;
+  }
+}
+
+// Apply the analyst lens to the FULL series (so YoY/MA have their lookback);
+// windowing happens afterwards. Same dates, transformed values; points without
+// enough history are dropped.
+std::vector<Observation> applyTransform(const std::vector<Observation>& obs, Transform t,
+                                        const std::string& freq) {
+  const int n = static_cast<int>(obs.size());
+  if (t == Transform::None || n == 0) return obs;
+  std::vector<Observation> out;
+  if (t == Transform::Pct) {
+    for (int i = 1; i < n; ++i)
+      if (obs[i - 1].value != 0.0)
+        out.push_back({obs[i].date, (obs[i].value / obs[i - 1].value - 1.0) * 100.0});
+  } else if (t == Transform::YoY) {
+    for (int i = 0; i < n; ++i) {
+      const std::string target = decYear(obs[i].date);
+      int a = 0, b = i - 1, j = -1;  // last point on/before one year earlier
+      while (a <= b) {
+        const int mid = (a + b) / 2;
+        if (obs[mid].date <= target) { j = mid; a = mid + 1; } else b = mid - 1;
+      }
+      if (j >= 0 && obs[j].value != 0.0)
+        out.push_back({obs[i].date, (obs[i].value / obs[j].value - 1.0) * 100.0});
+    }
+  } else {  // MA: trailing N-period moving average (N = one year)
+    const int N = std::max(2, periodsPerYear(freq));
+    double sum = 0.0;
+    for (int i = 0; i < n; ++i) {
+      sum += obs[i].value;
+      if (i >= N) sum -= obs[i - N].value;
+      if (i >= N - 1) out.push_back({obs[i].date, sum / N});
+    }
+  }
+  return out;
+}
+
 // Line chart via FTXUI Canvas: auto-sizes to the available box (no manual
 // dimensions), draws the series in cyan with a yellow vertical crosshair at the
 // cursor. Canvas uses braille internally (2x4 sub-cells) and supports per-point
@@ -265,12 +340,12 @@ Element chartElement(const std::vector<Observation>& obs, int cursor) {
 
 // The crosshair value readout: date + value at the cursor, the change from the
 // cursor to the latest point (Δ and %), and the latest value.
-Element readout(const std::vector<Observation>& obs, int cursor, const SeriesMeta& m) {
+Element readout(const std::vector<Observation>& obs, int cursor, const std::string& unitName) {
   if (obs.empty()) return text("");
   const int c = std::clamp(cursor, 0, static_cast<int>(obs.size()) - 1);
   const auto& cur = obs[c];
   const auto& last = obs.back();
-  const std::string unit = m.unit.empty() ? "" : (" " + m.unit);
+  const std::string unit = unitName.empty() ? "" : (" " + unitName);
 
   Element deltaEl = text("");
   if (c != static_cast<int>(obs.size()) - 1) {  // cursor isn't already the latest
@@ -307,7 +382,7 @@ std::string openUrl(const BoardSignal& s, Window win) {
 }
 
 Element detailPane(const BoardSignal& s, Window win, const std::vector<Observation>& wobs,
-                   int cursor) {
+                   int cursor, Transform transform) {
   const auto& m = s.series.meta;
   if (s.status == Status::Loading) {
     return vbox({text(s.id) | bold, separator(), text("Loading…") | dim});
@@ -317,19 +392,28 @@ Element detailPane(const BoardSignal& s, Window win, const std::vector<Observati
                  text("Data unavailable — press o to open on FRED") | dim});
   }
 
+  // YoY/% change re-unit the series to percent; MA keeps the native unit.
+  const bool pctUnit = transform == Transform::YoY || transform == Transform::Pct;
+  const std::string dispUnit = pctUnit ? "%" : m.unit;
+
   std::string meta = m.frequency;
-  if (!m.unit.empty()) meta += " · " + m.unit;
+  if (!dispUnit.empty()) meta += " · " + dispUnit;
   if (!m.seasonalAdj.empty()) meta += " · " + m.seasonalAdj;
 
+  Element lens = transform == Transform::None
+                     ? text("")
+                     : text("  [" + std::string(transformLabel(transform)) + "]") |
+                           color(Color::Magenta) | bold;
+
   return vbox({
-      text(m.title.empty() ? s.id : m.title) | bold,
+      hbox({text(m.title.empty() ? s.id : m.title) | bold, lens}),
       hbox({text(m.source + " · " + (m.id.empty() ? s.id : m.id)) | color(Color::Yellow),
             text("   " + meta) | dim}),
       windowTabs(win),
       separator(),
       chartElement(wobs, cursor) | flex,
       separator(),
-      readout(wobs, cursor, m),
+      readout(wobs, cursor, dispUnit),
       text(openUrl(s, win)) | dim,
   });
 }
@@ -411,6 +495,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   int cursor = 0;
   bool resetCursor = true;  // snap the crosshair to the latest point on load/switch
   bool moversMode = false;
+  Transform transform = Transform::None;
 
   // --- in-TUI search + add -------------------------------------------------
   std::string query;
@@ -515,6 +600,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
                row("j / k  ↑ ↓", "select signal"),
                row("h / l  ← →", "move chart crosshair"),
                row("w", "cycle window (1Y / 5Y / MAX)"),
+               row("t", "lens: YoY % / % chg / 1y MA"),
                row("m", "sort by biggest movers"),
                row("r", "refresh all data"),
                row("o", "open series on FRED"),
@@ -558,23 +644,25 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     Element leftPane = vbox(std::move(left)) | vscroll_indicator | yframe;
 
     const auto& sig = signals[selected];
-    const auto wobs = sig.status == Status::Loaded
-                          ? windowFilter(sig.series.observations, yearsOf(win))
-                          : std::vector<Observation>{};
+    const auto wobs =
+        sig.status == Status::Loaded
+            ? windowFilter(applyTransform(sig.series.observations, transform, sig.series.meta.frequency),
+                           yearsOf(win))
+            : std::vector<Observation>{};
     if (resetCursor) {
       cursor = wobs.empty() ? 0 : static_cast<int>(wobs.size()) - 1;
       resetCursor = false;
     }
     if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
-    Element detail = detailPane(sig, win, wobs, cursor);
+    Element detail = detailPane(sig, win, wobs, cursor, transform);
 
     std::string status = loaded < n
                              ? "  loading " + std::to_string(loaded) + "/" + std::to_string(n)
                              : "  " + std::to_string(n) + " signals";
     if (moversMode) status += " · movers";
     Element header = hbox({text(" datawire ") | bold | inverted, text(status) | dim});
-    Element footer = text(" j/k · h/l cursor · w window · m movers · / add · r refresh · o open · "
-                          "? help · q quit ") |
+    Element footer = text(" j/k · h/l cursor · w window · t lens · m movers · / add · r refresh · "
+                          "o open · ? help · q quit ") |
                      dim;
 
     Element boardEl = vbox({header, separator(),
@@ -634,6 +722,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       return true;
     }
     if (e == Event::Character('w')) { win = nextWindow(win); resetCursor = true; return true; }
+    if (e == Event::Character('t')) { transform = nextTransform(transform); resetCursor = true; return true; }
     if (e == Event::Character('r')) { refreshAll(); return true; }
     if (e == Event::Character('h') || e == Event::ArrowLeft) { --cursor; return true; }
     if (e == Event::Character('l') || e == Event::ArrowRight) { ++cursor; return true; }
