@@ -21,6 +21,7 @@
 #include <iostream>
 #include <iterator>
 #include <mutex>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -156,6 +157,26 @@ std::string sparkline(const std::vector<Observation>& obs, int width) {
     out += blocks[lvl];
   }
   return out;
+}
+
+// Recent move magnitude (|% change| of the latest point) — the movers sort key.
+double moverScore(const BoardSignal& s) {
+  if (s.status != Status::Loaded) return -1.0;  // unloaded sinks to the bottom
+  const auto& o = s.series.observations;
+  if (o.size() < 2) return 0.0;
+  const double prev = o[o.size() - 2].value;
+  const double last = o.back().value;
+  return prev != 0.0 ? std::abs((last - prev) / prev) : 0.0;
+}
+
+// Row order: watchlist order normally, biggest-mover-first in movers mode.
+std::vector<int> displayOrder(const std::vector<BoardSignal>& sigs, bool movers) {
+  std::vector<int> order(sigs.size());
+  std::iota(order.begin(), order.end(), 0);
+  if (movers)
+    std::stable_sort(order.begin(), order.end(),
+                     [&](int a, int b) { return moverScore(sigs[a]) > moverScore(sigs[b]); });
+  return order;
 }
 
 Element signalRow(const BoardSignal& s, bool selected) {
@@ -389,6 +410,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   Window win = Window::Y1;
   int cursor = 0;
   bool resetCursor = true;  // snap the crosshair to the latest point on load/switch
+  bool moversMode = false;
 
   // --- in-TUI search + add -------------------------------------------------
   std::string query;
@@ -493,6 +515,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
                row("j / k  ↑ ↓", "select signal"),
                row("h / l  ← →", "move chart crosshair"),
                row("w", "cycle window (1Y / 5Y / MAX)"),
+               row("m", "sort by biggest movers"),
                row("r", "refresh all data"),
                row("o", "open series on FRED"),
                text(""),
@@ -520,10 +543,13 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
 
     Elements left;
     int loaded = 0;
+    for (const auto& s : signals)
+      if (s.status == Status::Loaded) ++loaded;
+    const auto order = displayOrder(signals, moversMode);
     std::string cur = "\x01";  // sentinel so the first real group prints
-    for (int i = 0; i < n; ++i) {
-      if (signals[i].status == Status::Loaded) ++loaded;
-      if (signals[i].group != cur) {
+    for (int oi = 0; oi < n; ++oi) {
+      const int i = order[oi];
+      if (!moversMode && signals[i].group != cur) {  // groups only in watchlist order
         cur = signals[i].group;
         if (!cur.empty()) left.push_back(text(" " + cur) | bold | dim);
       }
@@ -542,13 +568,14 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
     Element detail = detailPane(sig, win, wobs, cursor);
 
-    const std::string status = loaded < n
-                                   ? "  loading " + std::to_string(loaded) + "/" + std::to_string(n)
-                                   : "  " + std::to_string(n) + " signals";
+    std::string status = loaded < n
+                             ? "  loading " + std::to_string(loaded) + "/" + std::to_string(n)
+                             : "  " + std::to_string(n) + " signals";
+    if (moversMode) status += " · movers";
     Element header = hbox({text(" datawire ") | bold | inverted, text(status) | dim});
-    Element footer =
-        text(" j/k signal · h/l cursor · w window · / add · r refresh · o open · ? help · q quit ") |
-        dim;
+    Element footer = text(" j/k · h/l cursor · w window · m movers · / add · r refresh · o open · "
+                          "? help · q quit ") |
+                     dim;
 
     Element boardEl = vbox({header, separator(),
                             hbox({leftPane | size(WIDTH, EQUAL, 48), separator(), detail | flex}) | flex,
@@ -587,13 +614,22 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       resultSel = 0;
       return true;
     }
+    if (e == Event::Character('m')) { moversMode = !moversMode; return true; }
     if (e == Event::Character('j') || e == Event::ArrowDown) {
-      if (selected < n - 1) ++selected;
+      std::lock_guard<std::mutex> lk(mu);
+      const auto order = displayOrder(signals, moversMode);
+      int pos = 0;
+      for (int k = 0; k < n; ++k) if (order[k] == selected) { pos = k; break; }
+      if (pos < n - 1) selected = order[pos + 1];
       resetCursor = true;
       return true;
     }
     if (e == Event::Character('k') || e == Event::ArrowUp) {
-      if (selected > 0) --selected;
+      std::lock_guard<std::mutex> lk(mu);
+      const auto order = displayOrder(signals, moversMode);
+      int pos = 0;
+      for (int k = 0; k < n; ++k) if (order[k] == selected) { pos = k; break; }
+      if (pos > 0) selected = order[pos - 1];
       resetCursor = true;
       return true;
     }
