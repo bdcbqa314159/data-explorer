@@ -7,9 +7,11 @@
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
+#include <ftxui/component/mouse.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/canvas.hpp>
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/box.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -293,7 +295,7 @@ std::vector<Observation> applyTransform(const std::vector<Observation>& obs, Tra
 // dimensions), draws the series in cyan with a yellow vertical crosshair at the
 // cursor. Canvas uses braille internally (2x4 sub-cells) and supports per-point
 // colour, so the crosshair is a real coloured line.
-Element chartElement(const std::vector<Observation>& obs, int cursor) {
+Element chartElement(const std::vector<Observation>& obs, int cursor, Box& chartBox) {
   if (obs.empty()) return text("(no data in window)") | dim | center;
   double mn = obs.front().value, mx = obs.front().value;
   for (const auto& o : obs) {
@@ -330,7 +332,7 @@ Element chartElement(const std::vector<Observation>& obs, int cursor) {
   Element plot = hbox({
                      vbox({text(formatValue(mx)) | dim, filler(), text(formatValue(mn)) | dim}) |
                          size(WIDTH, EQUAL, 9),
-                     canvas(draw) | flex,
+                     canvas(draw) | flex | reflect(chartBox),
                  }) |
                  flex;
   Element axis = hbox({text(std::string(9, ' ')), text(obs.front().date) | dim, filler(),
@@ -382,7 +384,7 @@ std::string openUrl(const BoardSignal& s, Window win) {
 }
 
 Element detailPane(const BoardSignal& s, Window win, const std::vector<Observation>& wobs,
-                   int cursor, Transform transform) {
+                   int cursor, Transform transform, Box& chartBox) {
   const auto& m = s.series.meta;
   if (s.status == Status::Loading) {
     return vbox({text(s.id) | bold, separator(), text("Loading…") | dim});
@@ -411,7 +413,7 @@ Element detailPane(const BoardSignal& s, Window win, const std::vector<Observati
             text("   " + meta) | dim}),
       windowTabs(win),
       separator(),
-      chartElement(wobs, cursor) | flex,
+      chartElement(wobs, cursor, chartBox) | flex,
       separator(),
       readout(wobs, cursor, dispUnit),
       text(openUrl(s, win)) | dim,
@@ -496,6 +498,8 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   bool resetCursor = true;  // snap the crosshair to the latest point on load/switch
   bool moversMode = false;
   Transform transform = Transform::None;
+  Box chartBox;    // canvas screen box (for click-to-scrub), captured each render
+  int chartN = 0;  // windowed point count, for mapping a click x -> index
 
   // --- in-TUI search + add -------------------------------------------------
   std::string query;
@@ -649,12 +653,15 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
             ? windowFilter(applyTransform(sig.series.observations, transform, sig.series.meta.frequency),
                            yearsOf(win))
             : std::vector<Observation>{};
-    if (resetCursor) {
-      cursor = wobs.empty() ? 0 : static_cast<int>(wobs.size()) - 1;
+    chartN = static_cast<int>(wobs.size());
+    // Snap to the latest only once data has arrived (the signal may still be
+    // loading when the cursor is first reset).
+    if (resetCursor && !wobs.empty()) {
+      cursor = chartN - 1;
       resetCursor = false;
     }
-    if (!wobs.empty()) cursor = std::clamp(cursor, 0, static_cast<int>(wobs.size()) - 1);
-    Element detail = detailPane(sig, win, wobs, cursor, transform);
+    if (!wobs.empty()) cursor = std::clamp(cursor, 0, chartN - 1);
+    Element detail = detailPane(sig, win, wobs, cursor, transform, chartBox);
 
     std::string status = loaded < n
                              ? "  loading " + std::to_string(loaded) + "/" + std::to_string(n)
@@ -676,7 +683,10 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
 
   component |= CatchEvent([&](Event e) {
     const int n = static_cast<int>(signals.size());
-    if (helpOpen) { helpOpen = false; return true; }  // any key closes help
+    if (helpOpen) {
+      if (!e.is_mouse()) helpOpen = false;  // a keypress closes help; ignore mouse
+      return true;
+    }
     // Modal captures all keys while open (manual text field).
     if (searchMode) {
       if (e == Event::Escape) { searchMode = false; return true; }
@@ -726,6 +736,16 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     if (e == Event::Character('r')) { refreshAll(); return true; }
     if (e == Event::Character('h') || e == Event::ArrowLeft) { --cursor; return true; }
     if (e == Event::Character('l') || e == Event::ArrowRight) { ++cursor; return true; }
+    if (e.is_mouse()) {  // click or drag on the chart moves the crosshair
+      const auto& mm = e.mouse();
+      if (mm.button == Mouse::Left && chartN > 0 && chartBox.Contain(mm.x, mm.y)) {
+        const int w = std::max(1, chartBox.x_max - chartBox.x_min);
+        const double frac = static_cast<double>(mm.x - chartBox.x_min) / w;
+        cursor = std::clamp(static_cast<int>(std::lround(frac * (chartN - 1))), 0, chartN - 1);
+        return true;
+      }
+      return false;
+    }
     if (e == Event::Character('o')) {
       std::string url;
       {
