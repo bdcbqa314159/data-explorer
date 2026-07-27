@@ -58,6 +58,9 @@ add_library(datawire_core STATIC
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp
+  src/fred_source.cpp
+  src/json_store.cpp
+  src/datawire.cpp
   src/window.cpp
   src/cache.cpp
 )
