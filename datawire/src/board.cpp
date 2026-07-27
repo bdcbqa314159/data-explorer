@@ -362,6 +362,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   int resultSel = 0;
   std::string searchStatus;
   bool searchMode = false;
+  bool helpOpen = false;
 
   auto runSearch = [&] {
     if (query.find_first_not_of(" \t") == std::string::npos) return;
@@ -447,6 +448,36 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
            clear_under;
   };
 
+  auto buildHelp = [&]() -> Element {
+    auto row = [](const char* k, const char* d) {
+      return hbox({text(k) | color(Color::Yellow) | size(WIDTH, EQUAL, 14), text(d) | dim});
+    };
+    return vbox({
+               text("datawire — keys") | bold,
+               separator(),
+               text("Board") | dim,
+               row("j / k  ↑ ↓", "select signal"),
+               row("h / l  ← →", "move chart crosshair"),
+               row("w", "cycle window (1Y / 5Y / MAX)"),
+               row("r", "refresh all data"),
+               row("o", "open series on FRED"),
+               text(""),
+               text("Add signal") | dim,
+               row("/  or  a", "open FRED search"),
+               row("↵", "search"),
+               row("↑ ↓", "pick a result"),
+               row("⇥ Tab", "add selected"),
+               row("esc", "close search"),
+               text(""),
+               text("General") | dim,
+               row("?", "this help"),
+               row("q / esc", "quit"),
+               separator(),
+               text("press any key to close") | dim | center,
+           }) |
+           border | size(WIDTH, EQUAL, 52) | bgcolor(Color::Black) | clear_under;
+  };
+
   auto component = Renderer([&] {
     std::lock_guard<std::mutex> lk(mu);  // signals/results read under the lock
     const int n = static_cast<int>(signals.size());
@@ -482,18 +513,21 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
                                    : "  " + std::to_string(n) + " signals";
     Element header = hbox({text(" datawire ") | bold | inverted, text(status) | dim});
     Element footer =
-        text(" j/k signal · h/l cursor · w window · / add · r refresh · o open · q quit ") | dim;
+        text(" j/k signal · h/l cursor · w window · / add · r refresh · o open · ? help · q quit ") |
+        dim;
 
     Element boardEl = vbox({header, separator(),
                             hbox({leftPane | size(WIDTH, EQUAL, 40), separator(), detail | flex}) | flex,
                             separator(), footer}) |
                       border;
     if (searchMode) return dbox({boardEl, buildModal() | center});
+    if (helpOpen) return dbox({boardEl, buildHelp() | center});
     return boardEl;
   });
 
   component |= CatchEvent([&](Event e) {
     const int n = static_cast<int>(signals.size());
+    if (helpOpen) { helpOpen = false; return true; }  // any key closes help
     // Modal captures all keys while open (manual text field).
     if (searchMode) {
       if (e == Event::Escape) { searchMode = false; return true; }
@@ -510,6 +544,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
       return true;
     }
     if (e == Event::Character('q') || e == Event::Escape) { screen.Exit(); return true; }
+    if (e == Event::Character('?')) { helpOpen = true; return true; }
     if (e == Event::Character('/') || e == Event::Character('a')) {
       searchMode = true;
       query.clear();
