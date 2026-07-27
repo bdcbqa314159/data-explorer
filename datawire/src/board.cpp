@@ -129,13 +129,14 @@ std::pair<std::string, Color> deltaOf(const Series& s) {
   return {"▬", Color::GrayLight};
 }
 
-// Compact block-char sparkline of the last ~span observations, resampled to
-// `width` columns. Each char is one column; empty string of spaces if no data.
+// Compact block-char sparkline of the last ~span observations. Each column is
+// the AVERAGE of the points that fall in its bucket (smooths jitter, vs. nearest
+// sampling), mapped to one of 8 bar heights. Empty spaces if no data.
 std::string sparkline(const std::vector<Observation>& obs, int width) {
   static const char* blocks[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
   if (obs.empty() || width <= 0) return std::string(std::max(0, width), ' ');
   const int n = static_cast<int>(obs.size());
-  const int span = std::min(n, 60);
+  const int span = std::min(n, 90);
   const int start = n - span;
   double mn = obs[start].value, mx = obs[start].value;
   for (int i = start; i < n; ++i) {
@@ -145,8 +146,13 @@ std::string sparkline(const std::vector<Observation>& obs, int width) {
   const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
   std::string out;
   for (int c = 0; c < width; ++c) {
-    const int idx = start + (span <= 1 ? 0 : static_cast<int>(std::lround(static_cast<double>(c) / (width - 1) * (span - 1))));
-    const int lvl = std::clamp(static_cast<int>(std::lround((obs[idx].value - mn) / range * 7)), 0, 7);
+    int a = start + static_cast<int>(static_cast<double>(c) / width * span);
+    int b = start + static_cast<int>(static_cast<double>(c + 1) / width * span);
+    b = std::clamp(std::max(b, a + 1), a + 1, n);
+    double sum = 0.0;
+    for (int i = a; i < b; ++i) sum += obs[i].value;
+    const double avg = sum / (b - a);
+    const int lvl = std::clamp(static_cast<int>(std::lround((avg - mn) / range * 7)), 0, 7);
     out += blocks[lvl];
   }
   return out;
@@ -156,9 +162,9 @@ Element signalRow(const BoardSignal& s, bool selected) {
   std::string name = s.series.meta.title.empty() ? s.id : s.series.meta.title;
   if (name.size() > 18) name = name.substr(0, 17) + "…";
 
-  Element spark = text("        ");  // 8 cols placeholder while loading
+  Element spark = text(std::string(12, ' '));  // placeholder while loading
   if (s.status == Status::Loaded && !s.series.observations.empty())
-    spark = text(sparkline(s.series.observations, 8)) | color(Color::Cyan);
+    spark = text(sparkline(s.series.observations, 12)) | color(Color::Cyan);
 
   std::string valStr;
   Element delta = text("      ");
