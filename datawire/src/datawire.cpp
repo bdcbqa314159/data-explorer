@@ -1,7 +1,7 @@
 #include "datawire.hpp"
 
 #include "fred_source.hpp"
-#include "json_store.hpp"
+#include "sqlite_store.hpp"
 
 #include <utility>
 
@@ -9,7 +9,7 @@ namespace datawire {
 
 Datawire Datawire::fred(std::string apiKey) {
   return Datawire(std::make_unique<FredSource>(std::move(apiKey)),
-                  std::make_unique<JsonStore>());
+                  std::make_unique<SqliteStore>());
 }
 
 Datawire::Datawire(std::unique_ptr<Source> source, std::unique_ptr<Store> store)

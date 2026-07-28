@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(datawire LANGUAGES CXX)
+project(datawire LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,6 +50,17 @@ FetchContent_Declare(ftxui
 
 FetchContent_MakeAvailable(curl nlohmann_json ftxui)
 
+# --- sqlite3: vendored amalgamation (offline, no fetch) ------------------
+# Committed under third_party/sqlite so the build needs no network. Backs the
+# local SqliteStore — the terminal's offline source of truth.
+add_library(sqlite3 STATIC third_party/sqlite/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC third_party/sqlite)
+target_compile_definitions(sqlite3 PRIVATE SQLITE_THREADSAFE=1 SQLITE_DQS=0)
+if(UNIX)
+  find_package(Threads REQUIRED)
+  target_link_libraries(sqlite3 PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
 # --- datawire_core: the SDK (data layer, no UI) --------------------------
 # Everything a non-TUI client would need: model, source (FRED), store (cache),
 # analysis. The TUI links this; a future CLI or another frontend could too.
@@ -60,6 +71,7 @@ add_library(datawire_core STATIC
   src/fred_fetch.cpp
   src/fred_source.cpp
   src/json_store.cpp
+  src/sqlite_store.cpp
   src/datawire.cpp
   src/window.cpp
   src/cache.cpp
@@ -69,6 +81,7 @@ target_link_libraries(datawire_core PUBLIC
   CURL::libcurl
   nlohmann_json::nlohmann_json
 )
+target_link_libraries(datawire_core PRIVATE sqlite3)
 
 # --- datawire: the terminal UI (thin client of datawire_core) ------------
 add_executable(datawire
@@ -92,3 +105,9 @@ add_test(NAME fred_test COMMAND fred_test)
 add_executable(window_test tests/window_test.cpp src/window.cpp)
 target_include_directories(window_test PRIVATE src)
 add_test(NAME window_test COMMAND window_test)
+
+# SqliteStore round-trip — in-memory DB, no network.
+add_executable(sqlite_store_test tests/sqlite_store_test.cpp src/sqlite_store.cpp)
+target_include_directories(sqlite_store_test PRIVATE src)
+target_link_libraries(sqlite_store_test PRIVATE sqlite3)
+add_test(NAME sqlite_store_test COMMAND sqlite_store_test)
