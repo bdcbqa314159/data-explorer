@@ -1,5 +1,7 @@
 #include "analysis.hpp"
 
+#include "stats.hpp"  // median, for the Theil–Sen estimator
+
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -174,6 +176,64 @@ std::vector<Observation> ratio(const Aligned& al) {
   for (int i = 0; i < al.n(); ++i)
     if (al.b[i] != 0.0) o.push_back({al.dates[i], al.a[i] / al.b[i]});
   return o;
+}
+
+std::vector<Observation> rollingCorrelation(const Aligned& al, int w) {
+  std::vector<Observation> out;
+  if (w < 2) return out;
+  const int n = al.n();
+  for (int i = w - 1; i < n; ++i) {
+    double sa = 0.0, sb = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) { sa += al.a[k]; sb += al.b[k]; }
+    const double ma = sa / w, mb = sb / w;
+    double saa = 0.0, sbb = 0.0, sab = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) {
+      const double da = al.a[k] - ma, db = al.b[k] - mb;
+      saa += da * da; sbb += db * db; sab += da * db;
+    }
+    const double c = (saa > 0.0 && sbb > 0.0) ? sab / std::sqrt(saa * sbb) : 0.0;
+    out.push_back({al.dates[i], c});
+  }
+  return out;
+}
+
+std::vector<Observation> rollingBeta(const Aligned& al, int w) {
+  std::vector<Observation> out;
+  if (w < 2) return out;
+  const int n = al.n();
+  for (int i = w - 1; i < n; ++i) {
+    double sa = 0.0, sb = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) { sa += al.a[k]; sb += al.b[k]; }
+    const double ma = sa / w, mb = sb / w;
+    double sbb = 0.0, sab = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) {
+      const double da = al.a[k] - ma, db = al.b[k] - mb;
+      sbb += db * db; sab += da * db;
+    }
+    out.push_back({al.dates[i], sbb > 0.0 ? sab / sbb : 0.0});
+  }
+  return out;
+}
+
+RobustFit theilSen(const Aligned& al) {
+  RobustFit f;
+  f.n = al.n();
+  if (f.n < 2) return f;
+  // ponytail: O(n²) pairwise slopes — fine on monthly-resampled windows
+  // (hundreds of points); revisit if it ever runs on raw daily series.
+  std::vector<double> slopes;
+  slopes.reserve(static_cast<size_t>(f.n) * (f.n - 1) / 2);
+  for (int i = 0; i < f.n; ++i)
+    for (int j = i + 1; j < f.n; ++j) {
+      const double db = al.b[j] - al.b[i];
+      if (db != 0.0) slopes.push_back((al.a[j] - al.a[i]) / db);
+    }
+  if (slopes.empty()) return f;
+  f.slope = median(slopes);
+  std::vector<double> res(f.n);
+  for (int i = 0; i < f.n; ++i) res[i] = al.a[i] - f.slope * al.b[i];
+  f.intercept = median(std::move(res));
+  return f;
 }
 
 }  // namespace datawire::analysis
