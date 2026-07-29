@@ -1,5 +1,6 @@
 #include "board.hpp"
 
+#include "analysis.hpp"
 #include "datawire.hpp"
 #include "series.hpp"
 #include "window.hpp"
@@ -34,6 +35,7 @@
 namespace datawire {
 
 using namespace ftxui;
+using namespace analysis;  // Transform, applyTransform, sparkline, compare stats…
 
 namespace {
 
@@ -50,25 +52,6 @@ enum class Window { Y1, Y5, MAX };
 int yearsOf(Window w) { return w == Window::Y1 ? 1 : w == Window::Y5 ? 5 : 1000; }
 Window nextWindow(Window w) {
   return w == Window::Y1 ? Window::Y5 : w == Window::Y5 ? Window::MAX : Window::Y1;
-}
-
-// Opt-in analyst lens applied to the charted series.
-enum class Transform { None, YoY, Pct, MA };
-Transform nextTransform(Transform t) {
-  switch (t) {
-    case Transform::None: return Transform::YoY;
-    case Transform::YoY: return Transform::Pct;
-    case Transform::Pct: return Transform::MA;
-    default: return Transform::None;
-  }
-}
-const char* transformLabel(Transform t) {
-  switch (t) {
-    case Transform::YoY: return "YoY %";
-    case Transform::Pct: return "% chg";
-    case Transform::MA: return "1y MA";
-    default: return "";
-  }
 }
 
 std::string padRight(std::string s, size_t w) {
@@ -153,43 +136,10 @@ std::pair<std::string, Color> deltaOf(const Series& s) {
   return {"▬", Color::GrayLight};
 }
 
-// Compact block-char sparkline of the last ~span observations. Each column is
-// the AVERAGE of the points that fall in its bucket (smooths jitter, vs. nearest
-// sampling), mapped to one of 8 bar heights. Empty spaces if no data.
-std::string sparkline(const std::vector<Observation>& obs, int width) {
-  static const char* blocks[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
-  if (obs.empty() || width <= 0) return std::string(std::max(0, width), ' ');
-  const int n = static_cast<int>(obs.size());
-  const int span = std::min(n, 90);
-  const int start = n - span;
-  double mn = obs[start].value, mx = obs[start].value;
-  for (int i = start; i < n; ++i) {
-    mn = std::min(mn, obs[i].value);
-    mx = std::max(mx, obs[i].value);
-  }
-  const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
-  std::string out;
-  for (int c = 0; c < width; ++c) {
-    int a = start + static_cast<int>(static_cast<double>(c) / width * span);
-    int b = start + static_cast<int>(static_cast<double>(c + 1) / width * span);
-    b = std::clamp(std::max(b, a + 1), a + 1, n);
-    double sum = 0.0;
-    for (int i = a; i < b; ++i) sum += obs[i].value;
-    const double avg = sum / (b - a);
-    const int lvl = std::clamp(static_cast<int>(std::lround((avg - mn) / range * 7)), 0, 7);
-    out += blocks[lvl];
-  }
-  return out;
-}
-
 // Recent move magnitude (|% change| of the latest point) — the movers sort key.
 double moverScore(const BoardSignal& s) {
   if (s.status != Status::Loaded) return -1.0;  // unloaded sinks to the bottom
-  const auto& o = s.series.observations;
-  if (o.size() < 2) return 0.0;
-  const double prev = o[o.size() - 2].value;
-  const double last = o.back().value;
-  return prev != 0.0 ? std::abs((last - prev) / prev) : 0.0;
+  return recentMovePct(s.series.observations);
 }
 
 // Row order: watchlist order normally, biggest-mover-first in movers mode.
@@ -235,62 +185,6 @@ Element windowTabs(Window w) {
   };
   return hbox({tab(" 1Y ", Window::Y1), text(" "), tab(" 5Y ", Window::Y5), text(" "),
                tab(" MAX ", Window::MAX)});
-}
-
-int periodsPerYear(const std::string& freq) {
-  auto has = [&](const char* s) { return freq.find(s) != std::string::npos; };
-  if (has("Dai")) return 252;
-  if (has("Week")) return 52;
-  if (has("Month")) return 12;
-  if (has("Quart")) return 4;
-  if (has("Semi")) return 2;
-  if (has("Ann")) return 1;
-  return 12;
-}
-
-// "YYYY-..." one year earlier, for date-based YoY lookup.
-std::string decYear(const std::string& date) {
-  if (date.size() < 4) return date;
-  try {
-    return std::to_string(std::stoi(date.substr(0, 4)) - 1) + date.substr(4);
-  } catch (...) {
-    return date;
-  }
-}
-
-// Apply the analyst lens to the FULL series (so YoY/MA have their lookback);
-// windowing happens afterwards. Same dates, transformed values; points without
-// enough history are dropped.
-std::vector<Observation> applyTransform(const std::vector<Observation>& obs, Transform t,
-                                        const std::string& freq) {
-  const int n = static_cast<int>(obs.size());
-  if (t == Transform::None || n == 0) return obs;
-  std::vector<Observation> out;
-  if (t == Transform::Pct) {
-    for (int i = 1; i < n; ++i)
-      if (obs[i - 1].value != 0.0)
-        out.push_back({obs[i].date, (obs[i].value / obs[i - 1].value - 1.0) * 100.0});
-  } else if (t == Transform::YoY) {
-    for (int i = 0; i < n; ++i) {
-      const std::string target = decYear(obs[i].date);
-      int a = 0, b = i - 1, j = -1;  // last point on/before one year earlier
-      while (a <= b) {
-        const int mid = (a + b) / 2;
-        if (obs[mid].date <= target) { j = mid; a = mid + 1; } else b = mid - 1;
-      }
-      if (j >= 0 && obs[j].value != 0.0)
-        out.push_back({obs[i].date, (obs[i].value / obs[j].value - 1.0) * 100.0});
-    }
-  } else {  // MA: trailing N-period moving average (N = one year)
-    const int N = std::max(2, periodsPerYear(freq));
-    double sum = 0.0;
-    for (int i = 0; i < n; ++i) {
-      sum += obs[i].value;
-      if (i >= N) sum -= obs[i - N].value;
-      if (i >= N - 1) out.push_back({obs[i].date, sum / N});
-    }
-  }
-  return out;
 }
 
 // Line chart via FTXUI Canvas: auto-sizes to the available box (no manual
