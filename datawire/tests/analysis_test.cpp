@@ -60,6 +60,19 @@ int main() {
     assert(al.dates[0] == "2025-02-01" && al.a[0] == 2 && al.b[0] == 20);
   }
 
+  // --- cross-frequency align: monthly A vs intra-month B, joined by month ---
+  {
+    std::vector<Observation> A;
+    for (int m = 1; m <= 6; ++m) A.push_back({ym(2025, m), (double)m});  // monthly
+    std::vector<Observation> B = {{"2025-01-03", 10.0}, {"2025-01-28", 11.0},  // two in Jan
+                                  {"2025-02-15", 20.0}, {"2025-03-09", 30.0}};
+    auto al = align(A, B);
+    assert(al.n() == 3);                    // Jan, Feb, Mar overlap
+    assert(al.dates[0] == "2025-01-01");    // representative date from monthly A
+    assert(near(al.b[0], 11.0));            // last observation in January wins
+    assert(near(al.a[2], 3.0) && near(al.b[2], 30.0));
+  }
+
   // --- compareStats / spread / ratio on B = 2A (perfect positive) ---
   {
     std::vector<Observation> A, B;

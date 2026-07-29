@@ -28,11 +28,18 @@ std::string sparkline(const std::vector<Observation>& obs, int width);
 double recentMovePct(const std::vector<Observation>& obs);  // |Δ%| of last pt; 0 if <2 pts
 
 // --- comparison of two series -------------------------------------------
-struct Aligned {  // inner-join on common dates, ascending
+// Collapse to one point per calendar month (last observation in the month),
+// so series of different frequencies (weekly, daily, quarterly…) can be
+// compared on a common monthly grid. Input is ascending by date.
+std::vector<Observation> resampleMonthly(const std::vector<Observation>& obs);
+
+struct Aligned {  // inner-join of two monthly-resampled series, ascending
   std::vector<std::string> dates;
   std::vector<double> a, b;
   int n() const { return static_cast<int>(dates.size()); }
 };
+// Resamples both to monthly, then inner-joins on year-month. Matching by
+// month (not exact date) is what lets a weekly series compare to a monthly one.
 Aligned align(const std::vector<Observation>& a, const std::vector<Observation>& b);
 
 struct CompareStats {
