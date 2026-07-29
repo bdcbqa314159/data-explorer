@@ -176,4 +176,41 @@ std::vector<Observation> ratio(const Aligned& al) {
   return o;
 }
 
+std::vector<Observation> rollingCorrelation(const Aligned& al, int w) {
+  std::vector<Observation> out;
+  if (w < 2) return out;
+  const int n = al.n();
+  for (int i = w - 1; i < n; ++i) {
+    double sa = 0.0, sb = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) { sa += al.a[k]; sb += al.b[k]; }
+    const double ma = sa / w, mb = sb / w;
+    double saa = 0.0, sbb = 0.0, sab = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) {
+      const double da = al.a[k] - ma, db = al.b[k] - mb;
+      saa += da * da; sbb += db * db; sab += da * db;
+    }
+    const double c = (saa > 0.0 && sbb > 0.0) ? sab / std::sqrt(saa * sbb) : 0.0;
+    out.push_back({al.dates[i], c});
+  }
+  return out;
+}
+
+std::vector<Observation> rollingBeta(const Aligned& al, int w) {
+  std::vector<Observation> out;
+  if (w < 2) return out;
+  const int n = al.n();
+  for (int i = w - 1; i < n; ++i) {
+    double sa = 0.0, sb = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) { sa += al.a[k]; sb += al.b[k]; }
+    const double ma = sa / w, mb = sb / w;
+    double sbb = 0.0, sab = 0.0;
+    for (int k = i - w + 1; k <= i; ++k) {
+      const double da = al.a[k] - ma, db = al.b[k] - mb;
+      sbb += db * db; sab += da * db;
+    }
+    out.push_back({al.dates[i], sbb > 0.0 ? sab / sbb : 0.0});
+  }
+  return out;
+}
+
 }  // namespace datawire::analysis

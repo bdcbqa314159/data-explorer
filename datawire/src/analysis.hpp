@@ -53,4 +53,9 @@ CompareStats compareStats(const Aligned& al);
 std::vector<Observation> spread(const Aligned& al);  // a - b, per common date
 std::vector<Observation> ratio(const Aligned& al);   // a / b, per common date (skips b==0)
 
+// Rolling window over the aligned pair (one point per full window, dated at its
+// end). w ≥ 2. Correlation ∈ [-1,1]; beta = slope of a on b in the window.
+std::vector<Observation> rollingCorrelation(const Aligned& al, int w);
+std::vector<Observation> rollingBeta(const Aligned& al, int w);
+
 }  // namespace datawire::analysis

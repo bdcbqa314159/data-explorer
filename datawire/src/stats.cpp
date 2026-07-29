@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace datawire::analysis {
 
@@ -71,6 +72,56 @@ Summary summarize(const std::vector<double>& x) {
   s.max = *std::max_element(x.begin(), x.end());
   s.last = x.back();
   return s;
+}
+
+std::vector<Observation> simpleReturns(const std::vector<Observation>& obs) {
+  std::vector<Observation> r;
+  for (size_t i = 1; i < obs.size(); ++i)
+    if (obs[i - 1].value != 0.0)
+      r.push_back({obs[i].date, obs[i].value / obs[i - 1].value - 1.0});
+  return r;
+}
+
+std::vector<Observation> logReturns(const std::vector<Observation>& obs) {
+  std::vector<Observation> r;
+  for (size_t i = 1; i < obs.size(); ++i)
+    if (obs[i - 1].value > 0.0 && obs[i].value > 0.0)
+      r.push_back({obs[i].date, std::log(obs[i].value / obs[i - 1].value)});
+  return r;
+}
+
+double volatility(const std::vector<Observation>& obs, int periodsPerYear) {
+  const auto r = simpleReturns(obs);
+  if (r.size() < 2) return 0.0;
+  return stdev(values(r)) * std::sqrt(static_cast<double>(std::max(1, periodsPerYear)));
+}
+
+std::vector<Observation> rollingMean(const std::vector<Observation>& obs, int w) {
+  std::vector<Observation> out;
+  if (w < 1) return out;
+  const int n = static_cast<int>(obs.size());
+  double sum = 0.0;  // running window sum
+  for (int i = 0; i < n; ++i) {
+    sum += obs[i].value;
+    if (i >= w) sum -= obs[i - w].value;
+    if (i >= w - 1) out.push_back({obs[i].date, sum / w});
+  }
+  return out;
+}
+
+std::vector<Observation> rollingStdev(const std::vector<Observation>& obs, int w) {
+  std::vector<Observation> out;
+  if (w < 2) return out;
+  const int n = static_cast<int>(obs.size());
+  // ponytail: O(n·w) recompute per window — fine at TUI sizes; swap for a
+  // sliding Welford if window stats ever land on a hot path.
+  for (int i = w - 1; i < n; ++i) {
+    std::vector<double> win;
+    win.reserve(w);
+    for (int k = i - w + 1; k <= i; ++k) win.push_back(obs[k].value);
+    out.push_back({obs[i].date, stdev(win)});
+  }
+  return out;
 }
 
 }  // namespace datawire::analysis

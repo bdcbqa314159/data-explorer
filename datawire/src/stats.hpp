@@ -34,4 +34,16 @@ struct Summary {
 };
 Summary summarize(const std::vector<double>& x);
 
+// --- returns ------------------------------------------------------------
+std::vector<Observation> simpleReturns(const std::vector<Observation>& obs);  // p_t/p_{t-1} − 1
+std::vector<Observation> logReturns(const std::vector<Observation>& obs);      // ln(p_t/p_{t-1})
+
+// Annualised volatility: stdev of simple returns × √periodsPerYear. 0 if <2
+// returns. (periodsPerYear is passed in — the caller derives it from frequency.)
+double volatility(const std::vector<Observation>& obs, int periodsPerYear);
+
+// --- rolling window statistics (one point per full window, dated at its end) --
+std::vector<Observation> rollingMean(const std::vector<Observation>& obs, int w);   // w ≥ 1
+std::vector<Observation> rollingStdev(const std::vector<Observation>& obs, int w);  // w ≥ 2
+
 }  // namespace datawire::analysis

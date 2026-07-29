@@ -89,6 +89,20 @@ int main() {
     assert(rt.size() == 4 && near(rt[0].value, 0.5));
   }
 
+  // --- rolling correlation / beta over the aligned pair (B = 2A) ---
+  {
+    std::vector<Observation> A, B;
+    for (int i = 1; i <= 6; ++i) { A.push_back({ym(2025, i), (double)i}); B.push_back({ym(2025, i), 2.0 * i}); }
+    auto al = align(A, B);
+    auto rc = rollingCorrelation(al, 3);
+    assert(rc.size() == 4);                       // 6 - 3 + 1
+    for (const auto& o : rc) assert(near(o.value, 1.0));
+    auto rb = rollingBeta(al, 3);
+    assert(rb.size() == 4);
+    for (const auto& o : rb) assert(near(o.value, 0.5));
+    assert(rollingCorrelation(al, 1).empty());    // w<2 -> nothing
+  }
+
   // --- anti-correlation gives -1 ---
   {
     std::vector<Observation> A, B;
