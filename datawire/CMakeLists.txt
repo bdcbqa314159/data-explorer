@@ -76,6 +76,7 @@ add_library(datawire_core STATIC
   src/window.cpp
   src/cache.cpp
   src/analysis.cpp
+  src/stats.cpp
 )
 target_include_directories(datawire_core PUBLIC src)
 target_link_libraries(datawire_core PUBLIC
@@ -117,3 +118,8 @@ add_test(NAME sqlite_store_test COMMAND sqlite_store_test)
 add_executable(analysis_test tests/analysis_test.cpp src/analysis.cpp)
 target_include_directories(analysis_test PRIVATE src)
 add_test(NAME analysis_test COMMAND analysis_test)
+
+# stats — robust descriptive statistics toolkit, no deps.
+add_executable(stats_test tests/stats_test.cpp src/stats.cpp)
+target_include_directories(stats_test PRIVATE src)
+add_test(NAME stats_test COMMAND stats_test)
