@@ -58,4 +58,12 @@ std::vector<Observation> ratio(const Aligned& al);   // a / b, per common date (
 std::vector<Observation> rollingCorrelation(const Aligned& al, int w);
 std::vector<Observation> rollingBeta(const Aligned& al, int w);
 
+// Theil–Sen robust slope of a on b: the median of all pairwise slopes. Far more
+// resistant to outliers than OLS beta (compareStats). Intercept = median(a − slope·b).
+struct RobustFit {
+  int n = 0;
+  double slope = 0.0, intercept = 0.0;
+};
+RobustFit theilSen(const Aligned& al);
+
 }  // namespace datawire::analysis

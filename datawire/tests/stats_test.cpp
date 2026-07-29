@@ -87,6 +87,16 @@ int main() {
     assert(rollingStdev(obs, 1).empty());                  // w<2 -> nothing
   }
 
+  // Outliers via robust z: one wild point flagged, clean data flags nothing.
+  {
+    std::vector<double> spiked = {10, 11, 12, 13, 14, 1000};
+    auto idx = outliers(spiked);
+    assert(idx.size() == 1 && idx[0] == 5);
+    assert(std::fabs(robustZ(spiked)[5]) > 3.5);
+    assert(outliers({10, 11, 12, 13, 14}).empty());
+    assert(outliers({}).empty());
+  }
+
   std::puts("stats_test OK");
   return 0;
 }

@@ -124,4 +124,22 @@ std::vector<Observation> rollingStdev(const std::vector<Observation>& obs, int w
   return out;
 }
 
+std::vector<double> robustZ(const std::vector<double>& x) {
+  std::vector<double> z(x.size(), 0.0);
+  if (x.empty()) return z;
+  const double med = median(x);
+  const double scale = mad(x);
+  if (scale <= 0.0) return z;  // no spread -> everything is "normal"
+  for (size_t i = 0; i < x.size(); ++i) z[i] = (x[i] - med) / scale;
+  return z;
+}
+
+std::vector<int> outliers(const std::vector<double>& x, double threshold) {
+  std::vector<int> idx;
+  const auto z = robustZ(x);
+  for (size_t i = 0; i < z.size(); ++i)
+    if (std::abs(z[i]) > threshold) idx.push_back(static_cast<int>(i));
+  return idx;
+}
+
 }  // namespace datawire::analysis

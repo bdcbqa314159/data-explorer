@@ -111,6 +111,20 @@ int main() {
     assert(near(s.correlation, -1.0));
   }
 
+  // --- Theil–Sen slope: matches OLS on clean data, resists an outlier ---
+  {
+    std::vector<Observation> A, B;
+    for (int i = 1; i <= 8; ++i) { A.push_back({ym(2025, i), (double)i}); B.push_back({ym(2025, i), 2.0 * i}); }
+    auto clean = align(A, B);
+    assert(near(theilSen(clean).slope, 0.5));                 // A ≈ 0.5·B
+    assert(near(compareStats(clean).beta, 0.5));              // OLS agrees when clean
+
+    A.back().value = 1000.0;                                  // one wild point in A
+    auto dirty = align(A, B);
+    assert(near(theilSen(dirty).slope, 0.5, 1e-9));           // robust: unchanged
+    assert(std::fabs(compareStats(dirty).beta - 0.5) > 1.0);  // OLS gets dragged away
+  }
+
   // --- transform cycle + labels ---
   assert(nextTransform(Transform::None) == Transform::YoY);
   assert(std::string(transformLabel(Transform::YoY)) == "YoY %");

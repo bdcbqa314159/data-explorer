@@ -1,5 +1,7 @@
 #include "analysis.hpp"
 
+#include "stats.hpp"  // median, for the Theil–Sen estimator
+
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -211,6 +213,27 @@ std::vector<Observation> rollingBeta(const Aligned& al, int w) {
     out.push_back({al.dates[i], sbb > 0.0 ? sab / sbb : 0.0});
   }
   return out;
+}
+
+RobustFit theilSen(const Aligned& al) {
+  RobustFit f;
+  f.n = al.n();
+  if (f.n < 2) return f;
+  // ponytail: O(n²) pairwise slopes — fine on monthly-resampled windows
+  // (hundreds of points); revisit if it ever runs on raw daily series.
+  std::vector<double> slopes;
+  slopes.reserve(static_cast<size_t>(f.n) * (f.n - 1) / 2);
+  for (int i = 0; i < f.n; ++i)
+    for (int j = i + 1; j < f.n; ++j) {
+      const double db = al.b[j] - al.b[i];
+      if (db != 0.0) slopes.push_back((al.a[j] - al.a[i]) / db);
+    }
+  if (slopes.empty()) return f;
+  f.slope = median(slopes);
+  std::vector<double> res(f.n);
+  for (int i = 0; i < f.n; ++i) res[i] = al.a[i] - f.slope * al.b[i];
+  f.intercept = median(std::move(res));
+  return f;
 }
 
 }  // namespace datawire::analysis

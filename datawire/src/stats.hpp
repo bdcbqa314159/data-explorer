@@ -46,4 +46,11 @@ double volatility(const std::vector<Observation>& obs, int periodsPerYear);
 std::vector<Observation> rollingMean(const std::vector<Observation>& obs, int w);   // w ≥ 1
 std::vector<Observation> rollingStdev(const std::vector<Observation>& obs, int w);  // w ≥ 2
 
+// --- outliers (robust, median/MAD based) --------------------------------
+// Robust z-score of each point: (x − median) / MAD. 0 for every point if there
+// is no spread (MAD = 0). Same order/length as the input.
+std::vector<double> robustZ(const std::vector<double>& x);
+// Indices of points whose |robust z| exceeds `threshold` (3.5 is a common cut).
+std::vector<int> outliers(const std::vector<double>& x, double threshold = 3.5);
+
 }  // namespace datawire::analysis
