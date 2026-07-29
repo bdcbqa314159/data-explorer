@@ -75,6 +75,7 @@ add_library(datawire_core STATIC
   src/datawire.cpp
   src/window.cpp
   src/cache.cpp
+  src/analysis.cpp
 )
 target_include_directories(datawire_core PUBLIC src)
 target_link_libraries(datawire_core PUBLIC
@@ -111,3 +112,8 @@ add_executable(sqlite_store_test tests/sqlite_store_test.cpp src/sqlite_store.cp
 target_include_directories(sqlite_store_test PRIVATE src)
 target_link_libraries(sqlite_store_test PRIVATE sqlite3)
 add_test(NAME sqlite_store_test COMMAND sqlite_store_test)
+
+# analysis — pure transforms + comparison metrics, no deps.
+add_executable(analysis_test tests/analysis_test.cpp src/analysis.cpp)
+target_include_directories(analysis_test PRIVATE src)
+add_test(NAME analysis_test COMMAND analysis_test)

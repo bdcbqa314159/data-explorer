@@ -1,5 +1,6 @@
 #include "board.hpp"
 
+#include "analysis.hpp"
 #include "datawire.hpp"
 #include "series.hpp"
 #include "window.hpp"
@@ -34,6 +35,7 @@
 namespace datawire {
 
 using namespace ftxui;
+using namespace analysis;  // Transform, applyTransform, sparkline, compare stats…
 
 namespace {
 
@@ -50,25 +52,6 @@ enum class Window { Y1, Y5, MAX };
 int yearsOf(Window w) { return w == Window::Y1 ? 1 : w == Window::Y5 ? 5 : 1000; }
 Window nextWindow(Window w) {
   return w == Window::Y1 ? Window::Y5 : w == Window::Y5 ? Window::MAX : Window::Y1;
-}
-
-// Opt-in analyst lens applied to the charted series.
-enum class Transform { None, YoY, Pct, MA };
-Transform nextTransform(Transform t) {
-  switch (t) {
-    case Transform::None: return Transform::YoY;
-    case Transform::YoY: return Transform::Pct;
-    case Transform::Pct: return Transform::MA;
-    default: return Transform::None;
-  }
-}
-const char* transformLabel(Transform t) {
-  switch (t) {
-    case Transform::YoY: return "YoY %";
-    case Transform::Pct: return "% chg";
-    case Transform::MA: return "1y MA";
-    default: return "";
-  }
 }
 
 std::string padRight(std::string s, size_t w) {
@@ -153,43 +136,10 @@ std::pair<std::string, Color> deltaOf(const Series& s) {
   return {"▬", Color::GrayLight};
 }
 
-// Compact block-char sparkline of the last ~span observations. Each column is
-// the AVERAGE of the points that fall in its bucket (smooths jitter, vs. nearest
-// sampling), mapped to one of 8 bar heights. Empty spaces if no data.
-std::string sparkline(const std::vector<Observation>& obs, int width) {
-  static const char* blocks[8] = {"▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
-  if (obs.empty() || width <= 0) return std::string(std::max(0, width), ' ');
-  const int n = static_cast<int>(obs.size());
-  const int span = std::min(n, 90);
-  const int start = n - span;
-  double mn = obs[start].value, mx = obs[start].value;
-  for (int i = start; i < n; ++i) {
-    mn = std::min(mn, obs[i].value);
-    mx = std::max(mx, obs[i].value);
-  }
-  const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
-  std::string out;
-  for (int c = 0; c < width; ++c) {
-    int a = start + static_cast<int>(static_cast<double>(c) / width * span);
-    int b = start + static_cast<int>(static_cast<double>(c + 1) / width * span);
-    b = std::clamp(std::max(b, a + 1), a + 1, n);
-    double sum = 0.0;
-    for (int i = a; i < b; ++i) sum += obs[i].value;
-    const double avg = sum / (b - a);
-    const int lvl = std::clamp(static_cast<int>(std::lround((avg - mn) / range * 7)), 0, 7);
-    out += blocks[lvl];
-  }
-  return out;
-}
-
 // Recent move magnitude (|% change| of the latest point) — the movers sort key.
 double moverScore(const BoardSignal& s) {
   if (s.status != Status::Loaded) return -1.0;  // unloaded sinks to the bottom
-  const auto& o = s.series.observations;
-  if (o.size() < 2) return 0.0;
-  const double prev = o[o.size() - 2].value;
-  const double last = o.back().value;
-  return prev != 0.0 ? std::abs((last - prev) / prev) : 0.0;
+  return recentMovePct(s.series.observations);
 }
 
 // Row order: watchlist order normally, biggest-mover-first in movers mode.
@@ -202,7 +152,7 @@ std::vector<int> displayOrder(const std::vector<BoardSignal>& sigs, bool movers)
   return order;
 }
 
-Element signalRow(const BoardSignal& s, bool selected, const std::string& spinner) {
+Element signalRow(const BoardSignal& s, bool selected, const std::string& spinner, bool pinned) {
   std::string name = s.series.meta.title.empty() ? s.id : s.series.meta.title;
   if (name.size() > 18) name = name.substr(0, 17) + "…";
 
@@ -222,7 +172,8 @@ Element signalRow(const BoardSignal& s, bool selected, const std::string& spinne
     valStr = "   " + spinner + "   ";  // loading (no data yet)
   }
 
-  Element row = hbox({text(" "), text(padRight(name, 18)), text(" "), spark, text(" "),
+  Element row = hbox({text(pinned ? "◆" : " ") | color(Color::Magenta),
+                      text(padRight(name, 18)), text(" "), spark, text(" "),
                       text(valStr), text(" "), delta});
   if (selected) return row | inverted | focus;
   return row;
@@ -235,62 +186,6 @@ Element windowTabs(Window w) {
   };
   return hbox({tab(" 1Y ", Window::Y1), text(" "), tab(" 5Y ", Window::Y5), text(" "),
                tab(" MAX ", Window::MAX)});
-}
-
-int periodsPerYear(const std::string& freq) {
-  auto has = [&](const char* s) { return freq.find(s) != std::string::npos; };
-  if (has("Dai")) return 252;
-  if (has("Week")) return 52;
-  if (has("Month")) return 12;
-  if (has("Quart")) return 4;
-  if (has("Semi")) return 2;
-  if (has("Ann")) return 1;
-  return 12;
-}
-
-// "YYYY-..." one year earlier, for date-based YoY lookup.
-std::string decYear(const std::string& date) {
-  if (date.size() < 4) return date;
-  try {
-    return std::to_string(std::stoi(date.substr(0, 4)) - 1) + date.substr(4);
-  } catch (...) {
-    return date;
-  }
-}
-
-// Apply the analyst lens to the FULL series (so YoY/MA have their lookback);
-// windowing happens afterwards. Same dates, transformed values; points without
-// enough history are dropped.
-std::vector<Observation> applyTransform(const std::vector<Observation>& obs, Transform t,
-                                        const std::string& freq) {
-  const int n = static_cast<int>(obs.size());
-  if (t == Transform::None || n == 0) return obs;
-  std::vector<Observation> out;
-  if (t == Transform::Pct) {
-    for (int i = 1; i < n; ++i)
-      if (obs[i - 1].value != 0.0)
-        out.push_back({obs[i].date, (obs[i].value / obs[i - 1].value - 1.0) * 100.0});
-  } else if (t == Transform::YoY) {
-    for (int i = 0; i < n; ++i) {
-      const std::string target = decYear(obs[i].date);
-      int a = 0, b = i - 1, j = -1;  // last point on/before one year earlier
-      while (a <= b) {
-        const int mid = (a + b) / 2;
-        if (obs[mid].date <= target) { j = mid; a = mid + 1; } else b = mid - 1;
-      }
-      if (j >= 0 && obs[j].value != 0.0)
-        out.push_back({obs[i].date, (obs[i].value / obs[j].value - 1.0) * 100.0});
-    }
-  } else {  // MA: trailing N-period moving average (N = one year)
-    const int N = std::max(2, periodsPerYear(freq));
-    double sum = 0.0;
-    for (int i = 0; i < n; ++i) {
-      sum += obs[i].value;
-      if (i >= N) sum -= obs[i - N].value;
-      if (i >= N - 1) out.push_back({obs[i].date, sum / N});
-    }
-  }
-  return out;
 }
 
 // Line chart via FTXUI Canvas: auto-sizes to the available box (no manual
@@ -422,6 +317,86 @@ Element detailPane(const BoardSignal& s, Window win, const std::vector<Observati
   });
 }
 
+// --- compare mode: two series overlaid, indexed to 100 at the window start so
+// different units share one axis. A = selected (cyan), B = pinned (magenta). ---
+Element compareChart(const Aligned& al, int cursor, Box& chartBox) {
+  const int n = al.n();
+  if (n < 2) return text("(need ≥2 overlapping dates to compare)") | dim | center;
+  const double ba = al.a[0] != 0.0 ? al.a[0] : 1.0;
+  const double bb = al.b[0] != 0.0 ? al.b[0] : 1.0;
+  std::vector<double> na(n), nb(n);
+  double mn = na[0] = al.a[0] / ba * 100.0, mx = mn;
+  for (int i = 0; i < n; ++i) {
+    na[i] = al.a[i] / ba * 100.0;
+    nb[i] = al.b[i] / bb * 100.0;
+    mn = std::min({mn, na[i], nb[i]});
+    mx = std::max({mx, na[i], nb[i]});
+  }
+  auto draw = [na, nb, mn, mx, cursor, n](Canvas& c) {
+    const int W = c.width(), H = c.height();
+    if (W <= 0 || H <= 0) return;
+    const double range = (mx - mn) > 0 ? (mx - mn) : 1.0;
+    auto px = [&](int i) { return n <= 1 ? 0 : static_cast<int>(std::lround(static_cast<double>(i) / (n - 1) * (W - 1))); };
+    auto py = [&](double v) { return std::clamp(static_cast<int>(std::lround((1.0 - (v - mn) / range) * (H - 1))), 0, H - 1); };
+    for (int i = 0; i + 1 < n; ++i) {
+      c.DrawPointLine(px(i), py(na[i]), px(i + 1), py(na[i + 1]), Color::Cyan);
+      c.DrawPointLine(px(i), py(nb[i]), px(i + 1), py(nb[i + 1]), Color::Magenta);
+    }
+    const int cx = px(std::clamp(cursor, 0, n - 1));
+    c.DrawPointLine(cx, 0, cx, H - 1, Color::Yellow);
+  };
+  Element plot = hbox({
+                     vbox({text(formatValue(mx)) | dim, filler(), text(formatValue(mn)) | dim}) |
+                         size(WIDTH, EQUAL, 9),
+                     canvas(draw) | flex | reflect(chartBox),
+                 }) |
+                 flex;
+  Element axis = hbox({text(std::string(9, ' ')), text(al.dates.front()) | dim, filler(),
+                       text(al.dates.back()) | dim});
+  return vbox({plot, axis});
+}
+
+Element compareReadout(const Aligned& al, int cursor, const std::string& aName,
+                       const std::string& bName, const CompareStats& st) {
+  if (al.n() == 0) return text("");
+  const int c = std::clamp(cursor, 0, al.n() - 1);
+  const double a = al.a[c], b = al.b[c];
+  char sbuf[80];
+  std::snprintf(sbuf, sizeof sbuf, "ρ %.2f   β %.2f   n=%d overlapping", st.correlation, st.beta, st.n);
+  const std::string ratioS = b != 0.0 ? formatValue(a / b) : "—";
+  return vbox({
+      hbox({text("▸ " + al.dates[c] + "  ") | color(Color::Yellow),
+            text(aName + " ") | color(Color::Cyan), text(formatValue(a)) | color(Color::Cyan) | bold,
+            text("   " + bName + " ") | color(Color::Magenta),
+            text(formatValue(b)) | color(Color::Magenta) | bold,
+            text("   A−B " + formatValue(a - b)) | dim, text("   A/B " + ratioS) | dim}),
+      text(sbuf) | dim,
+  });
+}
+
+Element comparePane(const BoardSignal& A, const BoardSignal& B, Window win, const Aligned& al,
+                    int cursor, Box& chartBox, const CompareStats& st) {
+  auto shortTitle = [](const BoardSignal& s) {
+    std::string t = s.series.meta.title.empty() ? s.id : s.series.meta.title;
+    return t.size() > 24 ? t.substr(0, 23) + "…" : t;
+  };
+  const std::string aName = A.series.meta.id.empty() ? A.id : A.series.meta.id;
+  const std::string bName = B.series.meta.id.empty() ? B.id : B.series.meta.id;
+  return vbox({
+      hbox({text("Compare  ") | bold, text(aName) | color(Color::Cyan) | bold,
+            text(" vs ") | dim, text(bName) | color(Color::Magenta) | bold}),
+      hbox({text(shortTitle(A)) | color(Color::Cyan) | dim, text("  vs  ") | dim,
+            text(shortTitle(B)) | color(Color::Magenta) | dim}),
+      windowTabs(win),
+      separator(),
+      compareChart(al, cursor, chartBox) | flex,
+      text("  indexed to 100 at window start") | dim,
+      separator(),
+      compareReadout(al, cursor, aName, bName, st),
+      text("  c unpin · select another signal to change A") | dim,
+  });
+}
+
 // Open a url in the OS browser. Reject only chars that are dangerous inside a
 // double-quoted shell argument — so '&' in a query string is fine (it's quoted).
 void openInBrowser(const std::string& url) {
@@ -517,6 +492,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
   int cursor = 0;
   bool resetCursor = true;  // snap the crosshair to the latest point on load/switch
   bool moversMode = false;
+  int compareIdx = -1;  // pinned "signal B" for compare mode; -1 = off
   Transform transform = Transform::None;
   Box chartBox;    // canvas screen box (for click-to-scrub), captured each render
   int chartN = 0;  // windowed point count, for mapping a click x -> index
@@ -625,6 +601,7 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
                row("h / l  ← →", "move chart crosshair"),
                row("w", "cycle window (1Y / 5Y / MAX)"),
                row("t", "lens: YoY % / % chg / 1y MA"),
+               row("c", "compare: pin/overlay vs another signal"),
                row("m", "sort by biggest movers"),
                row("r", "refresh all data"),
                row("o", "open series on FRED"),
@@ -668,32 +645,47 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
         cur = signals[i].group;
         if (!cur.empty()) left.push_back(text(" " + cur) | bold | dim);
       }
-      left.push_back(signalRow(signals[i], i == selected, spinner));
+      left.push_back(signalRow(signals[i], i == selected, spinner, i == compareIdx));
     }
     Element leftPane = vbox(std::move(left)) | vscroll_indicator | yframe;
 
-    const auto& sig = signals[selected];
-    const auto wobs =
-        sig.status == Status::Loaded
-            ? windowFilter(applyTransform(sig.series.observations, transform, sig.series.meta.frequency),
-                           yearsOf(win))
-            : std::vector<Observation>{};
-    chartN = static_cast<int>(wobs.size());
-    // Snap to the latest only once data has arrived (the signal may still be
-    // loading when the cursor is first reset).
-    if (resetCursor && !wobs.empty()) {
-      cursor = chartN - 1;
-      resetCursor = false;
+    const bool compareOn = compareIdx >= 0 && compareIdx < n && compareIdx != selected &&
+                           signals[selected].status == Status::Loaded &&
+                           signals[compareIdx].status == Status::Loaded;
+    Element detail;
+    if (compareOn) {
+      const auto& A = signals[selected];
+      const auto& B = signals[compareIdx];
+      auto trim = [&](const BoardSignal& s) {
+        return windowFilter(
+            applyTransform(s.series.observations, transform, s.series.meta.frequency), yearsOf(win));
+      };
+      const Aligned al = align(trim(A), trim(B));
+      chartN = al.n();
+      if (resetCursor && chartN > 0) { cursor = chartN - 1; resetCursor = false; }
+      if (chartN > 0) cursor = std::clamp(cursor, 0, chartN - 1);
+      detail = comparePane(A, B, win, al, cursor, chartBox, compareStats(al));
+    } else {
+      const auto& sig = signals[selected];
+      const auto wobs =
+          sig.status == Status::Loaded
+              ? windowFilter(applyTransform(sig.series.observations, transform, sig.series.meta.frequency),
+                             yearsOf(win))
+              : std::vector<Observation>{};
+      chartN = static_cast<int>(wobs.size());
+      // Snap to the latest only once data has arrived (may still be loading).
+      if (resetCursor && !wobs.empty()) { cursor = chartN - 1; resetCursor = false; }
+      if (!wobs.empty()) cursor = std::clamp(cursor, 0, chartN - 1);
+      detail = detailPane(sig, win, wobs, cursor, transform, chartBox);
     }
-    if (!wobs.empty()) cursor = std::clamp(cursor, 0, chartN - 1);
-    Element detail = detailPane(sig, win, wobs, cursor, transform, chartBox);
 
     std::string status = inflight.load() > 0 ? ("  " + spinner + " refreshing")
                                              : ("  " + std::to_string(n) + " signals");
     if (moversMode) status += " · movers";
+    if (compareOn) status += " · compare";
     Element header = hbox({text(" datawire ") | bold | inverted, text(status) | dim});
-    Element footer = text(" j/k · h/l cursor · w window · t lens · m movers · / add · r refresh · "
-                          "o open · ? help · q quit ") |
+    Element footer = text(" j/k · h/l cursor · w window · t lens · c compare · m movers · / add · "
+                          "r refresh · o open · ? help · q quit ") |
                      dim;
 
     Element boardEl = vbox({header, separator(),
@@ -757,6 +749,11 @@ int runBoard(const std::string& watchlistPath, const std::string& apiKey) {
     }
     if (e == Event::Character('w')) { win = nextWindow(win); resetCursor = true; return true; }
     if (e == Event::Character('t')) { transform = nextTransform(transform); resetCursor = true; return true; }
+    if (e == Event::Character('c')) {  // pin current as compare B; press again on it to unpin
+      compareIdx = (compareIdx == selected) ? -1 : selected;
+      resetCursor = true;
+      return true;
+    }
     if (e == Event::Character('r')) { refreshAll(); return true; }
     if (e == Event::Character('h') || e == Event::ArrowLeft) { --cursor; return true; }
     if (e == Event::Character('l') || e == Event::ArrowRight) { ++cursor; return true; }
