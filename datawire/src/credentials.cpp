@@ -1,9 +1,12 @@
 #include "credentials.hpp"
 
+#include "fallback_secret_store.hpp"
 #include "file_secret_store.hpp"
+#include "keychain_secret_store.hpp"
 #include "secret_store.hpp"
 
 #include <cstdlib>
+#include <utility>
 
 namespace fs = std::filesystem;
 
@@ -37,7 +40,16 @@ fs::path credentialsPath() {
 // (macOS Keychain, Windows Credential Manager, Linux Secret Service) slot in
 // here in the next slices, falling back to the file when unavailable.
 std::unique_ptr<SecretStore> defaultSecretStore() {
-  return std::make_unique<FileSecretStore>(credentialsPath());
+  auto file = std::make_unique<FileSecretStore>(credentialsPath());
+#if defined(__APPLE__)
+  // Keychain in front; the 0600 file stays readable so an existing key still
+  // works and migrates to the Keychain on the next `set`.
+  return std::make_unique<FallbackSecretStore>(std::make_unique<KeychainSecretStore>(),
+                                               std::move(file));
+#else
+  // TODO(M4 slice 3): Windows Credential Manager / Linux libsecret in front here.
+  return file;
+#endif
 }
 
 std::optional<std::string> loadApiKey() {

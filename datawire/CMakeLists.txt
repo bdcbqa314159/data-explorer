@@ -67,6 +67,8 @@ endif()
 add_library(datawire_core STATIC
   src/credentials.cpp
   src/file_secret_store.cpp
+  src/fallback_secret_store.cpp
+  src/keychain_secret_store.cpp
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp
@@ -85,6 +87,10 @@ target_link_libraries(datawire_core PUBLIC
   nlohmann_json::nlohmann_json
 )
 target_link_libraries(datawire_core PRIVATE sqlite3)
+if(APPLE)
+  # KeychainSecretStore uses the Security + CoreFoundation frameworks.
+  target_link_libraries(datawire_core PUBLIC "-framework Security" "-framework CoreFoundation")
+endif()
 
 # --- datawire: the terminal UI (thin client of datawire_core) ------------
 add_executable(datawire
@@ -125,7 +131,8 @@ add_executable(stats_test tests/stats_test.cpp src/stats.cpp)
 target_include_directories(stats_test PRIVATE src)
 add_test(NAME stats_test COMMAND stats_test)
 
-# secret store — file backend round-trip, no deps.
-add_executable(secret_store_test tests/secret_store_test.cpp src/file_secret_store.cpp)
+# secret store — file backend + fallback composition round-trip, no deps.
+add_executable(secret_store_test tests/secret_store_test.cpp
+  src/file_secret_store.cpp src/fallback_secret_store.cpp)
 target_include_directories(secret_store_test PRIVATE src)
 add_test(NAME secret_store_test COMMAND secret_store_test)

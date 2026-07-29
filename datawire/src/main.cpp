@@ -2,6 +2,7 @@
 #include "credentials.hpp"
 #include "fred.hpp"
 #include "http_client.hpp"
+#include "secret_store.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -37,15 +38,15 @@ int runKeyCommand(int argc, char** argv) {
       return 1;
     }
     saveApiKey(k);
-    std::cout << "Saved to " << credentialsPath().string() << " (permissions 600).\n";
+    std::cout << "Saved to " << defaultSecretStore()->location() << ".\n";
     return 0;
   }
   // status
   const auto k = loadApiKey();
-  std::cout << "credentials file: " << credentialsPath().string() << "\n";
+  std::cout << "secret store: " << defaultSecretStore()->location() << "\n";
   if (k) {
     const bool fromEnv = std::getenv("FRED_API_KEY") != nullptr;
-    std::cout << "key: " << mask(*k) << (fromEnv ? "  (from FRED_API_KEY env)" : "  (from file)") << "\n";
+    std::cout << "key: " << mask(*k) << (fromEnv ? "  (from FRED_API_KEY env)" : "  (from store)") << "\n";
   } else {
     std::cout << "key: not set — run `datawire key set`\n";
   }

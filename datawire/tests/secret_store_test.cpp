@@ -1,9 +1,11 @@
-// FileSecretStore round-trip against a temp file. No network, no keychain.
+// SecretStore backends: file round-trip + fallback composition. No keychain.
+#include "fallback_secret_store.hpp"
 #include "file_secret_store.hpp"
 
 #include <cassert>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 
 using namespace datawire;
 namespace fs = std::filesystem;
@@ -37,6 +39,28 @@ int main() {
 #endif
 
   fs::remove_all(p.parent_path(), ec);
+
+  // --- Fallback composition: read primary then fallback; write only primary ---
+  {
+    const fs::path base = fs::temp_directory_path() / "datawire_secret_test_fb";
+    fs::remove_all(base, ec);
+    const fs::path pp = base / "primary", fp = base / "fallback";
+    FileSecretStore(fp).set("K", "old");  // seed the fallback only
+
+    FallbackSecretStore fb(std::make_unique<FileSecretStore>(pp),
+                           std::make_unique<FileSecretStore>(fp));
+    assert(fb.get("K").value() == "old");  // served from fallback
+    fb.set("K", "new");                    // migrates to primary
+    assert(fb.get("K").value() == "new");  // primary now wins
+    assert(FileSecretStore(pp).get("K").value() == "new");
+    assert(FileSecretStore(fp).get("K").value() == "old");  // fallback untouched by set
+
+    fb.remove("K");                        // remove clears both
+    assert(!FileSecretStore(pp).get("K").has_value());
+    assert(!FileSecretStore(fp).get("K").has_value());
+    fs::remove_all(base, ec);
+  }
+
   std::puts("secret_store_test OK");
   return 0;
 }
