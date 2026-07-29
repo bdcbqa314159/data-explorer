@@ -3,6 +3,7 @@
 #include "analysis.hpp"
 #include "datawire.hpp"
 #include "series.hpp"
+#include "stats.hpp"
 #include "window.hpp"
 
 #include <ftxui/component/component.hpp>
@@ -280,6 +281,26 @@ std::string openUrl(const BoardSignal& s, Window win) {
   return url;
 }
 
+// Robust one-line stats for the charted window: median, σ, MAD (outlier-
+// resistant scale), annualised return vol, and an outlier count.
+Element statsLine(const std::vector<Observation>& wobs, const std::string& freq) {
+  if (wobs.size() < 2) return text("");
+  const auto v = values(wobs);
+  const auto s = summarize(v);
+  const double vol = volatility(wobs, periodsPerYear(freq)) * 100.0;
+  const int nOut = static_cast<int>(outliers(v).size());
+  std::string line = "  med " + formatValue(s.median) + "   σ " + formatValue(s.stdev) +
+                     "   MAD " + formatValue(s.mad);
+  char vbuf[24];
+  std::snprintf(vbuf, sizeof vbuf, "   vol %.1f%%", vol);
+  line += vbuf;
+  Element out = text(line) | dim;
+  if (nOut > 0)
+    return hbox({out, text("   ⚠ " + std::to_string(nOut) + (nOut > 1 ? " outliers" : " outlier")) |
+                          color(Color::Yellow)});
+  return out;
+}
+
 Element detailPane(const BoardSignal& s, Window win, const std::vector<Observation>& wobs,
                    int cursor, Transform transform, Box& chartBox) {
   const auto& m = s.series.meta;
@@ -313,6 +334,7 @@ Element detailPane(const BoardSignal& s, Window win, const std::vector<Observati
       chartElement(wobs, cursor, chartBox) | flex,
       separator(),
       readout(wobs, cursor, dispUnit),
+      statsLine(wobs, m.frequency),
       text(openUrl(s, win)) | dim,
   });
 }
@@ -361,8 +383,13 @@ Element compareReadout(const Aligned& al, int cursor, const std::string& aName,
   if (al.n() == 0) return text("");
   const int c = std::clamp(cursor, 0, al.n() - 1);
   const double a = al.a[c], b = al.b[c];
-  char sbuf[80];
-  std::snprintf(sbuf, sizeof sbuf, "ρ %.2f   β %.2f   n=%d overlapping", st.correlation, st.beta, st.n);
+  const double tsBeta = theilSen(al).slope;  // outlier-resistant β
+  const int rw = std::min(12, al.n());       // rolling ρ over up to 12 periods
+  const auto rc = rollingCorrelation(al, rw);
+  char sbuf[128];
+  std::snprintf(sbuf, sizeof sbuf, "ρ %.2f   β %.2f (robust %.2f)   n=%d%s", st.correlation, st.beta,
+                tsBeta, st.n,
+                rc.empty() ? "" : ("   ρ" + std::to_string(rw) + " " + formatValue(rc.back().value)).c_str());
   const std::string ratioS = b != 0.0 ? formatValue(a / b) : "—";
   return vbox({
       hbox({text("▸ " + al.dates[c] + "  ") | color(Color::Yellow),
