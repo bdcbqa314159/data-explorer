@@ -66,6 +66,7 @@ endif()
 # analysis. The TUI links this; a future CLI or another frontend could too.
 add_library(datawire_core STATIC
   src/credentials.cpp
+  src/file_secret_store.cpp
   src/http_client.cpp
   src/fred_parse.cpp
   src/fred_fetch.cpp
@@ -123,3 +124,8 @@ add_test(NAME analysis_test COMMAND analysis_test)
 add_executable(stats_test tests/stats_test.cpp src/stats.cpp)
 target_include_directories(stats_test PRIVATE src)
 add_test(NAME stats_test COMMAND stats_test)
+
+# secret store — file backend round-trip, no deps.
+add_executable(secret_store_test tests/secret_store_test.cpp src/file_secret_store.cpp)
+target_include_directories(secret_store_test PRIVATE src)
+add_test(NAME secret_store_test COMMAND secret_store_test)

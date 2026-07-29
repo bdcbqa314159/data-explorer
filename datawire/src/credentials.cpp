@@ -1,8 +1,9 @@
 #include "credentials.hpp"
 
+#include "file_secret_store.hpp"
+#include "secret_store.hpp"
+
 #include <cstdlib>
-#include <fstream>
-#include <stdexcept>
 
 namespace fs = std::filesystem;
 
@@ -20,12 +21,7 @@ fs::path homeBase() {
   return fs::current_path();
 }
 
-std::string trimTrailing(std::string v) {
-  while (!v.empty() && (v.back() == '\r' || v.back() == '\n' || v.back() == ' ' || v.back() == '\t')) {
-    v.pop_back();
-  }
-  return v;
-}
+constexpr const char* kApiKeyName = "FRED_API_KEY";
 
 }  // namespace
 
@@ -37,37 +33,19 @@ fs::path credentialsPath() {
 #endif
 }
 
+// Platform picker. Slice 1: the portable 0600 file. Native keychain backends
+// (macOS Keychain, Windows Credential Manager, Linux Secret Service) slot in
+// here in the next slices, falling back to the file when unavailable.
+std::unique_ptr<SecretStore> defaultSecretStore() {
+  return std::make_unique<FileSecretStore>(credentialsPath());
+}
+
 std::optional<std::string> loadApiKey() {
-  if (const char* env = std::getenv("FRED_API_KEY"); env && *env) {
-    return std::string(env);
-  }
-  std::ifstream in(credentialsPath());
-  std::string line;
-  const std::string prefix = "FRED_API_KEY=";
-  while (std::getline(in, line)) {
-    if (line.rfind(prefix, 0) == 0) {
-      const std::string v = trimTrailing(line.substr(prefix.size()));
-      if (!v.empty()) return v;
-    }
-  }
-  return std::nullopt;
+  // Env var wins — the escape hatch for CI/scripting.
+  if (const char* env = std::getenv(kApiKeyName); env && *env) return std::string(env);
+  return defaultSecretStore()->get(kApiKeyName);
 }
 
-void saveApiKey(const std::string& key) {
-  const auto path = credentialsPath();
-  std::error_code ec;
-  fs::create_directories(path.parent_path(), ec);
-  // Lock down the directory too (0700 on POSIX; harmless on Windows).
-  fs::permissions(path.parent_path(), fs::perms::owner_all, fs::perm_options::replace, ec);
-
-  {
-    std::ofstream out(path, std::ios::trunc);
-    if (!out) throw std::runtime_error("cannot write " + path.string());
-    out << "FRED_API_KEY=" << key << "\n";
-  }
-  // Owner read/write only (0600 on POSIX).
-  fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write,
-                  fs::perm_options::replace, ec);
-}
+void saveApiKey(const std::string& key) { defaultSecretStore()->set(kApiKeyName, key); }
 
 }  // namespace datawire
