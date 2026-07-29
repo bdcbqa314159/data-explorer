@@ -96,6 +96,7 @@ endif()
 add_executable(datawire
   src/main.cpp
   src/board.cpp
+  src/key_setup.cpp
 )
 target_link_libraries(datawire PRIVATE
   datawire_core
