@@ -109,17 +109,33 @@ double recentMovePct(const std::vector<Observation>& obs) {
   return prev != 0.0 ? std::abs((last - prev) / prev) : 0.0;
 }
 
+std::vector<Observation> resampleMonthly(const std::vector<Observation>& obs) {
+  std::vector<Observation> out;
+  for (const auto& o : obs) {
+    const std::string ym = o.date.substr(0, 7);  // "YYYY-MM"
+    if (!out.empty() && out.back().date.substr(0, 7) == ym)
+      out.back() = o;  // later obs in the same month wins (last-observation)
+    else
+      out.push_back(o);
+  }
+  return out;
+}
+
 Aligned align(const std::vector<Observation>& a, const std::vector<Observation>& b) {
-  // Both series are ascending by ISO date, so string order == chronological.
+  // Resample both to monthly, then inner-join on year-month. Ascending ISO
+  // dates mean the first 7 chars ("YYYY-MM") sort chronologically too.
+  const auto ra = resampleMonthly(a);
+  const auto rb = resampleMonthly(b);
   Aligned r;
   size_t i = 0, j = 0;
-  while (i < a.size() && j < b.size()) {
-    if (a[i].date == b[j].date) {
-      r.dates.push_back(a[i].date);
-      r.a.push_back(a[i].value);
-      r.b.push_back(b[j].value);
+  while (i < ra.size() && j < rb.size()) {
+    const std::string ka = ra[i].date.substr(0, 7), kb = rb[j].date.substr(0, 7);
+    if (ka == kb) {
+      r.dates.push_back(ra[i].date);
+      r.a.push_back(ra[i].value);
+      r.b.push_back(rb[j].value);
       ++i; ++j;
-    } else if (a[i].date < b[j].date) {
+    } else if (ka < kb) {
       ++i;
     } else {
       ++j;
