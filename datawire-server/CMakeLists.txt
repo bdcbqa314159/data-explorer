@@ -30,3 +30,9 @@ target_link_libraries(datawire-server-selftest PRIVATE
   Boost::headers Boost::charconv
   OpenSSL::SSL OpenSSL::Crypto Threads::Threads
 )
+
+# End-to-end test: DB round-trip + live HTTP endpoint assertions.
+# Needs MySQL; the script exits 77 (ctest SKIP) when it's unreachable.
+enable_testing()
+add_test(NAME server_e2e COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/test.sh)
+set_tests_properties(server_e2e PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
