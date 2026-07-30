@@ -2,6 +2,8 @@
 #include "credentials.hpp"
 #include "fred.hpp"
 #include "http_client.hpp"
+#include "key_setup.hpp"
+#include "secret_store.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -13,13 +15,6 @@ using namespace datawire;
 
 namespace {
 
-std::string trim(std::string s) {
-  auto notspace = [](unsigned char c) { return !std::isspace(c); };
-  s.erase(s.begin(), std::find_if(s.begin(), s.end(), notspace));
-  s.erase(std::find_if(s.rbegin(), s.rend(), notspace).base(), s.end());
-  return s;
-}
-
 std::string mask(const std::string& k) {
   if (k.size() <= 4) return "****";
   return std::string(k.size() - 4, '*') + k.substr(k.size() - 4);
@@ -28,24 +23,16 @@ std::string mask(const std::string& k) {
 int runKeyCommand(int argc, char** argv) {
   const std::string sub = argc > 2 ? argv[2] : "status";
   if (sub == "set") {
-    std::cout << "Paste your FRED API key (stored to a 0600 file, not shell history): ";
-    std::string k;
-    std::getline(std::cin, k);
-    k = trim(k);
-    if (k.empty()) {
-      std::cerr << "No key entered.\n";
-      return 1;
-    }
-    saveApiKey(k);
-    std::cout << "Saved to " << credentialsPath().string() << " (permissions 600).\n";
-    return 0;
+    const int rc = runKeySetup(*defaultSecretStore());  // masked entry + live FRED validation
+    std::cout << (rc == 0 ? "Key validated and saved.\n" : "Key not saved.\n");
+    return rc;
   }
   // status
   const auto k = loadApiKey();
-  std::cout << "credentials file: " << credentialsPath().string() << "\n";
+  std::cout << "secret store: " << defaultSecretStore()->location() << "\n";
   if (k) {
     const bool fromEnv = std::getenv("FRED_API_KEY") != nullptr;
-    std::cout << "key: " << mask(*k) << (fromEnv ? "  (from FRED_API_KEY env)" : "  (from file)") << "\n";
+    std::cout << "key: " << mask(*k) << (fromEnv ? "  (from FRED_API_KEY env)" : "  (from store)") << "\n";
   } else {
     std::cout << "key: not set — run `datawire key set`\n";
   }
