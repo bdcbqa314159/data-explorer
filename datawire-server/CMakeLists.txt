@@ -15,7 +15,8 @@ find_package(Boost 1.86 REQUIRED COMPONENTS charconv)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 
-add_executable(datawire-server src/main.cpp)
+add_executable(datawire-server src/main.cpp src/db.cpp)
+target_include_directories(datawire-server PRIVATE ../datawire/src)  # shared series.hpp model
 target_link_libraries(datawire-server PRIVATE
   Boost::headers
   Boost::charconv
