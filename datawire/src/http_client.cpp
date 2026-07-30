@@ -48,35 +48,61 @@ std::string caBundle() {
 #endif
 }
 
+void applyCommon(CURL* h, const std::string& url, std::string* body, long timeout,
+                 const std::string& caPath) {
+  curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, appendToString);
+  curl_easy_setopt(h, CURLOPT_WRITEDATA, body);
+  curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(h, CURLOPT_TIMEOUT, timeout);
+  curl_easy_setopt(h, CURLOPT_USERAGENT, "datawire/0.1");
+  curl_easy_setopt(h, CURLOPT_ACCEPT_ENCODING, "");
+  // caPath (a specific cert, e.g. the dev server) overrides the public CA bundle.
+  const std::string ca = caPath.empty() ? caBundle() : caPath;
+  if (!ca.empty()) curl_easy_setopt(h, CURLOPT_CAINFO, ca.c_str());
+  curl_easy_setopt(h, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(h, CURLOPT_SSL_VERIFYHOST, 2L);
+}
+
+// Perform and validate; throws on transport error or HTTP >= 400.
+void check(CURL* h, const char* verb, const std::string& url) {
+  const CURLcode rc = curl_easy_perform(h);
+  if (rc != CURLE_OK)
+    throw std::runtime_error(std::string(verb) + " failed for " + url + ": " + curl_easy_strerror(rc));
+  long httpCode = 0;
+  curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &httpCode);
+  if (httpCode >= 400)
+    throw std::runtime_error(std::string(verb) + " " + url + " returned HTTP " + std::to_string(httpCode));
+}
+
 }  // namespace
 
-std::string httpGet(const std::string& url, long timeoutSeconds) {
+std::string httpGet(const std::string& url, long timeoutSeconds, const std::string& caPath) {
   EasyHandle easy;
   std::string body;
+  applyCommon(easy.h, url, &body, timeoutSeconds, caPath);
+  check(easy.h, "GET", url);
+  return body;
+}
 
-  curl_easy_setopt(easy.h, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(easy.h, CURLOPT_WRITEFUNCTION, appendToString);
-  curl_easy_setopt(easy.h, CURLOPT_WRITEDATA, &body);
-  curl_easy_setopt(easy.h, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(easy.h, CURLOPT_TIMEOUT, timeoutSeconds);
-  curl_easy_setopt(easy.h, CURLOPT_USERAGENT, "datawire/0.1");
-  curl_easy_setopt(easy.h, CURLOPT_ACCEPT_ENCODING, "");
-
-  // mbedTLS has no OS trust store: give it our CA bundle and verify the peer.
-  const std::string ca = caBundle();
-  if (!ca.empty()) curl_easy_setopt(easy.h, CURLOPT_CAINFO, ca.c_str());
-  curl_easy_setopt(easy.h, CURLOPT_SSL_VERIFYPEER, 1L);
-  curl_easy_setopt(easy.h, CURLOPT_SSL_VERIFYHOST, 2L);
-
-  const CURLcode rc = curl_easy_perform(easy.h);
-  if (rc != CURLE_OK) {
-    throw std::runtime_error("GET failed for " + url + ": " + curl_easy_strerror(rc));
+std::string httpPost(const std::string& url, const std::string& reqBody,
+                     const std::string& contentType, long timeoutSeconds,
+                     const std::string& caPath) {
+  EasyHandle easy;
+  std::string body;
+  applyCommon(easy.h, url, &body, timeoutSeconds, caPath);
+  curl_easy_setopt(easy.h, CURLOPT_POST, 1L);
+  curl_easy_setopt(easy.h, CURLOPT_POSTFIELDS, reqBody.c_str());
+  curl_easy_setopt(easy.h, CURLOPT_POSTFIELDSIZE, static_cast<long>(reqBody.size()));
+  curl_slist* headers = curl_slist_append(nullptr, ("Content-Type: " + contentType).c_str());
+  curl_easy_setopt(easy.h, CURLOPT_HTTPHEADER, headers);
+  try {
+    check(easy.h, "POST", url);
+  } catch (...) {
+    curl_slist_free_all(headers);
+    throw;
   }
-  long httpCode = 0;
-  curl_easy_getinfo(easy.h, CURLINFO_RESPONSE_CODE, &httpCode);
-  if (httpCode >= 400) {
-    throw std::runtime_error("GET " + url + " returned HTTP " + std::to_string(httpCode));
-  }
+  curl_slist_free_all(headers);
   return body;
 }
 

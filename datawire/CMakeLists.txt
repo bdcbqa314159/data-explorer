@@ -98,6 +98,7 @@ add_library(datawire_core STATIC
   src/cache.cpp
   src/analysis.cpp
   src/stats.cpp
+  src/remote_store.cpp
 )
 target_include_directories(datawire_core PUBLIC src)
 target_link_libraries(datawire_core PUBLIC
@@ -136,6 +137,12 @@ add_test(NAME fred_test COMMAND fred_test)
 add_executable(window_test tests/window_test.cpp src/window.cpp)
 target_include_directories(window_test PRIVATE src)
 add_test(NAME window_test COMMAND window_test)
+
+# RemoteStore — graceful offline behaviour (no server needed for the test).
+add_executable(remote_store_test tests/remote_store_test.cpp src/remote_store.cpp src/http_client.cpp)
+target_include_directories(remote_store_test PRIVATE src)
+target_link_libraries(remote_store_test PRIVATE CURL::libcurl nlohmann_json::nlohmann_json)
+add_test(NAME remote_store_test COMMAND remote_store_test)
 
 # SqliteStore round-trip — in-memory DB, no network.
 add_executable(sqlite_store_test tests/sqlite_store_test.cpp src/sqlite_store.cpp)

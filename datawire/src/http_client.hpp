@@ -14,6 +14,12 @@ public:
 };
 
 // GET a URL, return the body. Throws std::runtime_error on failure (net/TLS/HTTP>=400).
-std::string httpGet(const std::string& url, long timeoutSeconds = 20);
+// caPath, if set, is a CA cert file to verify the server against (e.g. the dev cert).
+std::string httpGet(const std::string& url, long timeoutSeconds = 20, const std::string& caPath = "");
+
+// POST a body, return the response body. Throws on net/TLS/HTTP>=400.
+std::string httpPost(const std::string& url, const std::string& body,
+                     const std::string& contentType = "application/json",
+                     long timeoutSeconds = 20, const std::string& caPath = "");
 
 }  // namespace datawire
