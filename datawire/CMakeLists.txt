@@ -8,22 +8,40 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Deps downloaded from GitHub and built from source via FetchContent (like feedwire).
 include(FetchContent)
 
-# --- libcurl: HTTP + TLS (native backend per platform) -------------------
+# --- mbedTLS: one TLS backend for curl on EVERY OS (vendored from GitHub) -----
+# Replaces the per-platform native backends (SecureTransport on macOS, SChannel
+# on Windows), each of which treats a custom CA file differently. With mbedTLS,
+# CAINFO (verify against a given cert) behaves identically on mac/win/linux.
+set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)  # don't -Werror mbedTLS's own code on newer clang
+FetchContent_Declare(mbedtls
+  GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+  GIT_TAG        v3.6.2
+  GIT_SUBMODULES_RECURSE TRUE
+)
+FetchContent_MakeAvailable(mbedtls)
+
+# --- libcurl: HTTP + TLS via mbedTLS -----------------------------------------
 set(BUILD_TESTING OFF)
 set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(HTTP_ONLY ON CACHE BOOL "" FORCE)
 set(CURL_ZLIB OFF CACHE BOOL "" FORCE)
 set(CURL_ENABLE_SSL ON CACHE BOOL "" FORCE)
+set(CURL_USE_MBEDTLS ON CACHE BOOL "" FORCE)
+set(CURL_USE_OPENSSL OFF CACHE BOOL "" FORCE)
+set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
 set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
 set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
-if(WIN32)
-  set(CURL_USE_SCHANNEL ON CACHE BOOL "" FORCE)
-elseif(APPLE)
-  set(CURL_USE_SECTRANSP ON CACHE BOOL "" FORCE)
-else()
-  set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)  # needs system OpenSSL dev headers
-endif()
+# We link curl in-tree, never install it — skip the export set (it drags in the
+# mbedTLS targets, which aren't in any export set and error out).
+set(CURL_ENABLE_EXPORT_TARGET OFF CACHE BOOL "" FORCE)
+# Point curl's FindMbedTLS at the FetchContent build (targets, not an install).
+set(MBEDTLS_INCLUDE_DIRS "${mbedtls_SOURCE_DIR}/include" CACHE PATH "" FORCE)
+set(MBEDTLS_LIBRARY    mbedtls    CACHE STRING "" FORCE)
+set(MBEDX509_LIBRARY   mbedx509   CACHE STRING "" FORCE)
+set(MBEDCRYPTO_LIBRARY mbedcrypto CACHE STRING "" FORCE)
 FetchContent_Declare(curl
   GIT_REPOSITORY https://github.com/curl/curl.git
   GIT_TAG        curl-8_11_0
@@ -87,6 +105,9 @@ target_link_libraries(datawire_core PUBLIC
   nlohmann_json::nlohmann_json
 )
 target_link_libraries(datawire_core PRIVATE sqlite3)
+# Vendored CA bundle path for mbedTLS (no OS trust store) — verifies public HTTPS.
+target_compile_definitions(datawire_core PRIVATE
+  DATAWIRE_CA_BUNDLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/third_party/cacert.pem")
 if(APPLE)
   # KeychainSecretStore uses the Security + CoreFoundation frameworks.
   target_link_libraries(datawire_core PUBLIC "-framework Security" "-framework CoreFoundation")
