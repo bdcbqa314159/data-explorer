@@ -2,6 +2,7 @@
 
 #include <curl/curl.h>
 
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -35,6 +36,18 @@ struct EasyHandle {
   EasyHandle& operator=(const EasyHandle&) = delete;
 };
 
+// mbedTLS has no OS trust store, so curl needs an explicit CA bundle to verify
+// public HTTPS (e.g. FRED). Prefer $DATAWIRE_CA_BUNDLE, else the vendored one
+// compiled in via DATAWIRE_CA_BUNDLE_PATH. Empty -> curl uses its own default.
+std::string caBundle() {
+  if (const char* env = std::getenv("DATAWIRE_CA_BUNDLE"); env && *env) return env;
+#ifdef DATAWIRE_CA_BUNDLE_PATH
+  return DATAWIRE_CA_BUNDLE_PATH;
+#else
+  return {};
+#endif
+}
+
 }  // namespace
 
 std::string httpGet(const std::string& url, long timeoutSeconds) {
@@ -48,6 +61,12 @@ std::string httpGet(const std::string& url, long timeoutSeconds) {
   curl_easy_setopt(easy.h, CURLOPT_TIMEOUT, timeoutSeconds);
   curl_easy_setopt(easy.h, CURLOPT_USERAGENT, "datawire/0.1");
   curl_easy_setopt(easy.h, CURLOPT_ACCEPT_ENCODING, "");
+
+  // mbedTLS has no OS trust store: give it our CA bundle and verify the peer.
+  const std::string ca = caBundle();
+  if (!ca.empty()) curl_easy_setopt(easy.h, CURLOPT_CAINFO, ca.c_str());
+  curl_easy_setopt(easy.h, CURLOPT_SSL_VERIFYPEER, 1L);
+  curl_easy_setopt(easy.h, CURLOPT_SSL_VERIFYHOST, 2L);
 
   const CURLcode rc = curl_easy_perform(easy.h);
   if (rc != CURLE_OK) {
