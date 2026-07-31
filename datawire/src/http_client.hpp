@@ -14,7 +14,8 @@ public:
 };
 
 // GET a URL, return the body. Throws std::runtime_error on failure (net/TLS/HTTP>=400).
-// caPath, if set, is a CA cert file to verify the server against (e.g. the dev cert).
+// caPath, if set, is a CA cert file to verify the server against (e.g. the dev
+// server cert); otherwise the vendored CA bundle verifies. Peer verification is on.
 std::string httpGet(const std::string& url, long timeoutSeconds = 20, const std::string& caPath = "");
 
 // POST a body, return the response body. Throws on net/TLS/HTTP>=400.

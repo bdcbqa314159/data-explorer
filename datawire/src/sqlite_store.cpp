@@ -110,6 +110,14 @@ std::optional<StoredSeries> SqliteStore::get(const std::string& id) {
   return StoredSeries{std::move(s), nowSec() - fetchedAt};
 }
 
+std::vector<std::string> SqliteStore::listIds() {
+  std::vector<std::string> out;
+  sqlite3_stmt* st = prepare(db_, "SELECT id FROM series ORDER BY id;");
+  while (sqlite3_step(st) == SQLITE_ROW) out.push_back(colText(st, 0));
+  sqlite3_finalize(st);
+  return out;
+}
+
 void SqliteStore::put(const std::string& id, const Series& s) {
   exec(db_, "BEGIN;");
   try {
