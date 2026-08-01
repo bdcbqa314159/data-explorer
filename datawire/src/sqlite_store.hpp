@@ -3,6 +3,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 struct sqlite3;  // opaque; only sqlite_store.cpp includes <sqlite3.h>
 
@@ -23,6 +24,7 @@ public:
 
   std::optional<StoredSeries> get(const std::string& id) override;
   void put(const std::string& id, const Series& series) override;
+  std::vector<std::string> listIds();  // all stored series ids, ascending (for sync)
 
   static std::string defaultDbPath();
 

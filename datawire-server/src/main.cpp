@@ -15,8 +15,10 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
 #include <boost/json.hpp>
 
 #include <cstdlib>
@@ -26,6 +28,7 @@
 namespace beast = boost::beast;
 namespace http = beast::http;
 namespace net = boost::asio;
+namespace ssl = boost::asio::ssl;
 namespace json = boost::json;
 using tcp = net::ip::tcp;
 using namespace datawire;
@@ -121,20 +124,24 @@ http::response<http::string_body> route(const http::request<http::string_body>& 
   }
 }
 
-void serve(tcp::socket socket, server::Db& db) {
+// One TLS session: handshake, then serve HTTP requests over the encrypted stream.
+void serve(ssl::stream<tcp::socket> stream, server::Db& db) {
   beast::error_code ec;
+  stream.handshake(ssl::stream_base::server, ec);
+  if (ec) return;  // failed/untrusted client handshake — drop it
+
   beast::flat_buffer buffer;
   for (;;) {
     http::request<http::string_body> req;
-    http::read(socket, buffer, req, ec);
+    http::read(stream, buffer, req, ec);
     if (ec == http::error::end_of_stream) break;
     if (ec) return;
     http::response<http::string_body> res = route(req, db);
     const bool keep = res.keep_alive();
-    http::write(socket, res, ec);
+    http::write(stream, res, ec);
     if (ec || !keep) break;
   }
-  socket.shutdown(tcp::socket::shutdown_send, ec);
+  stream.shutdown(ec);  // TLS close-notify (ignore errors on teardown)
 }
 
 }  // namespace
@@ -143,18 +150,29 @@ int main() {
   try {
     server::Db db;  // connect + schema up front; fail fast if MySQL is down
     const unsigned short port = static_cast<unsigned short>(std::stoi(env("DATAWIRE_PORT", "8080")));
+    const std::string cert = env("DATAWIRE_TLS_CERT", "certs/server.crt");
+    const std::string key = env("DATAWIRE_TLS_KEY", "certs/server.key");
+
+    // TLS 1.2+ context with the dev cert. `./gen-cert.sh` creates the files.
+    ssl::context tls(ssl::context::tls_server);
+    tls.set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
+                    ssl::context::no_sslv3 | ssl::context::no_tlsv1 | ssl::context::no_tlsv1_1 |
+                    ssl::context::single_dh_use);
+    tls.use_certificate_chain_file(cert);
+    tls.use_private_key_file(key, ssl::context::pem);
 
     net::io_context ioc;
     tcp::acceptor acceptor(ioc, tcp::endpoint(net::ip::make_address("127.0.0.1"), port));
-    std::cout << "datawire-server listening on http://127.0.0.1:" << port << "\n";
+    std::cout << "datawire-server listening on https://127.0.0.1:" << port << " (TLS)\n";
 
     for (;;) {
       tcp::socket socket(ioc);
       acceptor.accept(socket);
-      serve(std::move(socket), db);
+      serve(ssl::stream<tcp::socket>(std::move(socket), tls), db);
     }
   } catch (const std::exception& e) {
-    std::cerr << "Fatal: " << e.what() << "\n(is MySQL running? `brew services start mysql`)\n";
+    std::cerr << "Fatal: " << e.what()
+              << "\n(MySQL running? `brew services start mysql`; cert present? `./gen-cert.sh`)\n";
     return 1;
   }
 }

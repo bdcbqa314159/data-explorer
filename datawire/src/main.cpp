@@ -3,7 +3,9 @@
 #include "fred.hpp"
 #include "http_client.hpp"
 #include "key_setup.hpp"
+#include "remote_store.hpp"
 #include "secret_store.hpp"
+#include "sqlite_store.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -18,6 +20,58 @@ namespace {
 std::string mask(const std::string& k) {
   if (k.size() <= 4) return "****";
   return std::string(k.size() - 4, '*') + k.substr(k.size() - 4);
+}
+
+// Reconcile the local SQLite store with the datawire-server: push every local
+// series up, pull server-only series down (local wins — never clobbered). The
+// terminal keeps reading from SQLite; this is the explicit online sync step.
+int runSync() {
+  auto envOr = [](const char* k, const char* d) {
+    const char* v = std::getenv(k);
+    return std::string(v && *v ? v : d);
+  };
+  const std::string url = envOr("DATAWIRE_SERVER_URL", "https://127.0.0.1:8080");
+  const std::string ca = envOr("DATAWIRE_SERVER_CA", "");
+
+  SqliteStore local(SqliteStore::defaultDbPath());
+  RemoteStore remote(url, ca);
+
+  std::vector<std::string> remoteIds;
+  try {
+    remoteIds = remote.listIds();  // also our connectivity check
+  } catch (const std::exception& e) {
+    std::cerr << "sync: server unreachable at " << url << " (" << e.what() << ")\n";
+    if (ca.empty())
+      std::cerr << "  self-signed dev cert? point DATAWIRE_SERVER_CA at the server's cert.\n";
+    return 1;
+  }
+
+  int pushed = 0, pushErr = 0;
+  for (const auto& id : local.listIds()) {
+    const auto s = local.get(id);
+    if (!s) continue;
+    try {
+      remote.put(id, s->series);
+      ++pushed;
+    } catch (const std::exception& e) {
+      ++pushErr;
+      std::cerr << "  push " << id << " failed: " << e.what() << "\n";
+    }
+  }
+
+  int pulled = 0;
+  for (const auto& id : remoteIds) {
+    if (local.get(id)) continue;  // keep local copy; don't overwrite
+    if (const auto s = remote.get(id)) {
+      local.put(id, s->series);
+      ++pulled;
+    }
+  }
+
+  std::cout << "sync (" << url << "): pushed " << pushed << ", pulled " << pulled;
+  if (pushErr) std::cout << ", " << pushErr << " push errors";
+  std::cout << "\n";
+  return pushErr ? 1 : 0;
 }
 
 int runKeyCommand(int argc, char** argv) {
@@ -66,6 +120,8 @@ int main(int argc, char** argv) {
     return runBoard(wl, *key);
   }
 
+  if (cmd == "sync") return runSync();
+
   try {
     if (cmd == "search" && argc > 2) {
       for (const auto& r : searchSeries(argv[2], *key)) {
@@ -83,7 +139,7 @@ int main(int argc, char** argv) {
       std::cout << s.observations.size() << " observations · " << s.meta.sourceUrl << "\n";
       return 0;
     }
-    std::cerr << "usage: datawire [board [watchlist]] | get <ID> | search <text> | key [set]\n";
+    std::cerr << "usage: datawire [board [watchlist]] | get <ID> | search <text> | sync | key [set]\n";
     return 2;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";
