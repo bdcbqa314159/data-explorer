@@ -64,15 +64,34 @@ void applyCommon(CURL* h, const std::string& url, std::string* body, long timeou
   curl_easy_setopt(h, CURLOPT_SSL_VERIFYHOST, 2L);
 }
 
+// Mask secret query params before a URL lands in an error message or log —
+// FRED puts the api_key in the query string, and errors get printed to stderr.
+std::string redactSecrets(std::string url) {
+  static const char* const kSecretKeys[] = {"api_key", "apikey", "token", "password"};
+  for (const char* key : kSecretKeys) {
+    const std::string needle = std::string(key) + "=";
+    for (size_t pos = url.find(needle); pos != std::string::npos; pos = url.find(needle, pos)) {
+      const size_t vstart = pos + needle.size();
+      size_t vend = url.find('&', vstart);
+      if (vend == std::string::npos) vend = url.size();
+      url.replace(vstart, vend - vstart, "REDACTED");
+      pos = vstart + 8;  // past "REDACTED"
+    }
+  }
+  return url;
+}
+
 // Perform and validate; throws on transport error or HTTP >= 400.
 void check(CURL* h, const char* verb, const std::string& url) {
   const CURLcode rc = curl_easy_perform(h);
   if (rc != CURLE_OK)
-    throw std::runtime_error(std::string(verb) + " failed for " + url + ": " + curl_easy_strerror(rc));
+    throw std::runtime_error(std::string(verb) + " failed for " + redactSecrets(url) + ": " +
+                             curl_easy_strerror(rc));
   long httpCode = 0;
   curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &httpCode);
   if (httpCode >= 400)
-    throw std::runtime_error(std::string(verb) + " " + url + " returned HTTP " + std::to_string(httpCode));
+    throw std::runtime_error(std::string(verb) + " " + redactSecrets(url) + " returned HTTP " +
+                             std::to_string(httpCode));
 }
 
 }  // namespace
