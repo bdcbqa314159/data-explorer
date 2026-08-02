@@ -7,8 +7,11 @@
 #include "secret_store.hpp"
 #include "sqlite_store.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -93,6 +96,73 @@ int runKeyCommand(int argc, char** argv) {
   return 0;
 }
 
+std::string humanAge(long long sec) {
+  if (sec < 0) sec = 0;
+  if (sec < 90) return std::to_string(sec) + "s";
+  if (sec < 90 * 60) return std::to_string(sec / 60) + "m";
+  if (sec < 48 * 3600) return std::to_string(sec / 3600) + "h";
+  return std::to_string(sec / 86400) + "d";
+}
+
+// `datawire list` — catalog of everything in the local SQLite store.
+int runList() {
+  SqliteStore local(SqliteStore::defaultDbPath());
+  const auto ids = local.listIds();
+  if (ids.empty()) {
+    std::cout << "(store empty — run the board or `datawire get <ID>` to fetch some series)\n";
+    return 0;
+  }
+  std::printf("%-14s %-9s %7s  %-11s %6s  %s\n", "ID", "FREQ", "POINTS", "LAST", "AGE", "TITLE");
+  for (const auto& id : ids) {
+    const auto s = local.get(id);
+    if (!s) continue;
+    const auto& m = s->series.meta;
+    const auto& obs = s->series.observations;
+    std::string freq = m.frequency;  // "Quarterly, End of Period" -> "Quarterly"
+    if (const auto cut = freq.find_first_of(", "); cut != std::string::npos) freq = freq.substr(0, cut);
+    const std::string title = m.title.size() > 44 ? m.title.substr(0, 43) + "…" : m.title;
+    std::printf("%-14s %-9s %7zu  %-11s %6s  %s\n", id.c_str(), freq.c_str(), obs.size(),
+                obs.empty() ? "-" : obs.back().date.c_str(), humanAge(s->ageSec).c_str(),
+                title.c_str());
+  }
+  return 0;
+}
+
+// `datawire export <ID> [--json]` — dump a stored series to stdout (CSV default).
+int runExport(int argc, char** argv) {
+  if (argc < 3) {
+    std::cerr << "usage: datawire export <ID> [--json]\n";
+    return 2;
+  }
+  const std::string id = argv[2];
+  const bool json = argc > 3 && std::string(argv[3]) == "--json";
+  SqliteStore local(SqliteStore::defaultDbPath());
+  const auto s = local.get(id);
+  if (!s) {
+    std::cerr << "not in store: " << id << " (fetch it in the board or `datawire get " << id
+              << "` first)\n";
+    return 1;
+  }
+  const Series& series = s->series;
+  if (json) {
+    nlohmann::json meta = {{"id", series.meta.id},
+                           {"title", series.meta.title},
+                           {"unit", series.meta.unit},
+                           {"frequency", series.meta.frequency},
+                           {"seasonalAdj", series.meta.seasonalAdj},
+                           {"asOf", series.meta.asOf},
+                           {"sourceUrl", series.meta.sourceUrl},
+                           {"source", series.meta.source}};
+    auto obs = nlohmann::json::array();
+    for (const auto& o : series.observations) obs.push_back({{"date", o.date}, {"value", o.value}});
+    std::cout << nlohmann::json{{"meta", meta}, {"observations", obs}}.dump(2) << "\n";
+  } else {
+    std::cout << "date,value\n";
+    for (const auto& o : series.observations) std::printf("%s,%.10g\n", o.date.c_str(), o.value);
+  }
+  return 0;
+}
+
 }  // namespace
 
 //   datawire                     -> the two-pane board (watchlist.txt)
@@ -101,10 +171,14 @@ int runKeyCommand(int argc, char** argv) {
 //   datawire key                 -> show key status (masked)
 //   datawire get UNRATE          -> probe one series' latest value + count
 //   datawire search "credit ..." -> catalog search results
+//   datawire list                -> catalog of what's in the local store
+//   datawire export UNRATE       -> dump a stored series to stdout (CSV; --json for JSON)
 int main(int argc, char** argv) {
   const std::string cmd = argc > 1 ? argv[1] : "";
 
   if (cmd == "key") return runKeyCommand(argc, argv);
+  if (cmd == "list") return runList();               // local store — no key needed
+  if (cmd == "export") return runExport(argc, argv);  // local store — no key needed
 
   const auto key = loadApiKey();
   if (!key) {
@@ -139,7 +213,8 @@ int main(int argc, char** argv) {
       std::cout << s.observations.size() << " observations · " << s.meta.sourceUrl << "\n";
       return 0;
     }
-    std::cerr << "usage: datawire [board [watchlist]] | get <ID> | search <text> | sync | key [set]\n";
+    std::cerr << "usage: datawire [board [watchlist]] | list | export <ID> [--json] | "
+                 "get <ID> | search <text> | sync | key [set]\n";
     return 2;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";
