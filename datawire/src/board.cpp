@@ -325,10 +325,19 @@ Element detailPane(const BoardSignal& s, Window win, const std::vector<Observati
                      : text("  [" + std::string(transformLabel(transform)) + "]") |
                            color(Color::Magenta) | bold;
 
+  // Provenance badge: where this in-memory copy came from (live/cached/synced).
+  const Origin org = s.series.origin;
+  Element badge = org == Origin::Unknown
+                      ? text("")
+                      : text("  ● " + std::string(originLabel(org))) |
+                            color(org == Origin::FredApi     ? Color::Green
+                                  : org == Origin::ServerSync ? Color::Cyan
+                                                              : Color::GrayLight);
+
   return vbox({
       hbox({text(m.title.empty() ? s.id : m.title) | bold, lens}),
       hbox({text(m.source + " · " + (m.id.empty() ? s.id : m.id)) | color(Color::Yellow),
-            text("   " + meta) | dim}),
+            text("   " + meta) | dim, badge}),
       windowTabs(win),
       separator(),
       chartElement(wobs, cursor, chartBox) | flex,
