@@ -52,6 +52,13 @@ export FRED_API_KEY=<your key>
 #   j/k select · h/l crosshair · w window · t lens · c compare · m movers · / add · ? help · q quit
 ```
 
+### Inspect & export the local store (no key needed)
+```bash
+./build/datawire list                  # catalog of everything stored (id/freq/points/last/age/title)
+./build/datawire export UNRATE         # CSV to stdout: date,value
+./build/datawire export UNRATE --json  # JSON: {meta, observations}
+```
+
 ### Bring up the server + sync (optional)
 ```bash
 brew install mysql boost openssl && brew services start mysql
