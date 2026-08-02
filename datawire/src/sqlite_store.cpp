@@ -90,6 +90,7 @@ std::optional<StoredSeries> SqliteStore::get(const std::string& id) {
   }
 
   Series s;
+  s.origin = Origin::LocalDb;  // served from the local SQLite store
   s.meta.id = id;
   s.meta.title = colText(st, 0);
   s.meta.unit = colText(st, 1);

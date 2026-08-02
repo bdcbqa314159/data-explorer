@@ -33,6 +33,9 @@ int main() {
   assert(got->series.observations[0].date == "2026-04-01");   // ascending
   assert(got->series.observations[2].value == 4.1);
   assert(got->ageSec >= 0 && got->ageSec < 5);                 // just stored
+  assert(got->series.origin == Origin::LocalDb);              // provenance stamped on read
+  assert(std::string(originLabel(Origin::LocalDb)) == "cached");
+  assert(std::string(originLabel(Origin::FredApi)) == "live");
 
   // Re-put replaces observations wholesale (not append) and refreshes meta.
   s.observations = {{"2026-07-01", 4.2}};

@@ -49,6 +49,7 @@ std::optional<StoredSeries> RemoteStore::get(const std::string& id) {
   try {
     const std::string body = httpGet(baseUrl_ + "/series/" + id, 20, caPath_);
     Series s = fromJson(nlohmann::json::parse(body));
+    s.origin = Origin::ServerSync;         // pulled from the shared server
     return StoredSeries{std::move(s), 0};  // server doesn't expose age; treat as fresh
   } catch (...) {
     return std::nullopt;  // 404 (not on server) or offline
