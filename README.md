@@ -57,6 +57,7 @@ export FRED_API_KEY=<your key>
 ./build/datawire list                  # catalog of everything stored (id/freq/points/last/age/title)
 ./build/datawire export UNRATE         # CSV to stdout: date,value
 ./build/datawire export UNRATE --json  # JSON: {meta, observations}
+./build/datawire stats UNRATE          # analysis toolkit: mean/median/stdev/MAD/vol/outliers
 ```
 
 ### Bring up the server + sync (optional)

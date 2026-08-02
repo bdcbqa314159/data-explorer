@@ -5,7 +5,9 @@
 #include "key_setup.hpp"
 #include "remote_store.hpp"
 #include "secret_store.hpp"
+#include "analysis.hpp"
 #include "sqlite_store.hpp"
+#include "stats.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -163,6 +165,51 @@ int runExport(int argc, char** argv) {
   return 0;
 }
 
+// `datawire stats <ID>` — the analysis toolkit's numbers for a stored series.
+int runStats(int argc, char** argv) {
+  if (argc < 3) {
+    std::cerr << "usage: datawire stats <ID>\n";
+    return 2;
+  }
+  const std::string id = argv[2];
+  SqliteStore local(SqliteStore::defaultDbPath());
+  const auto s = local.get(id);
+  if (!s) {
+    std::cerr << "not in store: " << id << " (fetch it in the board or `datawire get " << id
+              << "` first)\n";
+    return 1;
+  }
+  const Series& series = s->series;
+  const auto& obs = series.observations;
+  if (obs.size() < 2) {
+    std::cerr << "not enough data for stats (" << obs.size() << " points)\n";
+    return 1;
+  }
+
+  const auto v = analysis::values(obs);
+  const auto sum = analysis::summarize(v);
+  const double vol = analysis::volatility(obs, analysis::periodsPerYear(series.meta.frequency)) * 100.0;
+  const auto out = analysis::outliers(v);
+
+  const auto& m = series.meta;
+  std::printf("%s — %s  [%s]\n", id.c_str(), m.title.c_str(), originLabel(series.origin));
+  std::printf("%s · %s · %d points · %s → %s\n\n", m.frequency.c_str(), m.unit.c_str(), sum.n,
+              obs.front().date.c_str(), obs.back().date.c_str());
+  auto row = [](const char* k, double val) { std::printf("  %-9s %12.4g\n", k, val); };
+  row("mean", sum.mean);
+  row("median", sum.median);
+  row("stdev", sum.stdev);
+  std::printf("  %-9s %12.4g   (robust \xcf\x83)\n", "MAD", sum.mad);
+  row("min", sum.min);
+  row("max", sum.max);
+  row("q25", sum.q25);
+  row("q75", sum.q75);
+  row("last", sum.last);
+  std::printf("  %-9s %11.1f%%   (annualised, from returns)\n", "vol", vol);
+  std::printf("  %-9s %12zu   (robust-z > 3.5)\n", "outliers", out.size());
+  return 0;
+}
+
 }  // namespace
 
 //   datawire                     -> the two-pane board (watchlist.txt)
@@ -173,12 +220,14 @@ int runExport(int argc, char** argv) {
 //   datawire search "credit ..." -> catalog search results
 //   datawire list                -> catalog of what's in the local store
 //   datawire export UNRATE       -> dump a stored series to stdout (CSV; --json for JSON)
+//   datawire stats UNRATE        -> analysis-toolkit numbers for a stored series
 int main(int argc, char** argv) {
   const std::string cmd = argc > 1 ? argv[1] : "";
 
   if (cmd == "key") return runKeyCommand(argc, argv);
   if (cmd == "list") return runList();               // local store — no key needed
   if (cmd == "export") return runExport(argc, argv);  // local store — no key needed
+  if (cmd == "stats") return runStats(argc, argv);    // local store — no key needed
 
   const auto key = loadApiKey();
   if (!key) {
@@ -214,7 +263,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     std::cerr << "usage: datawire [board [watchlist]] | list | export <ID> [--json] | "
-                 "get <ID> | search <text> | sync | key [set]\n";
+                 "stats <ID> | get <ID> | search <text> | sync | key [set]\n";
     return 2;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << "\n";
